@@ -1,0 +1,10 @@
+.git
+.github
+.claude
+.dockerignore
+Dockerfile
+bin
+results
+tools
+*.md
+.DS_Store
