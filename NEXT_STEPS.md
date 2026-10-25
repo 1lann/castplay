@@ -52,7 +52,7 @@ Read DESIGN.md §8–§9 first: the spike results, the decisions (Cast Streaming
     - **Tone:** a 60 s 440 Hz/660 Hz stereo tone (`sine` + `amerge`, `volume=0.3`).
     - **Sync beeps:** `aevalsrc=0.5*sin(2*PI*1000*t)*lt(mod(t\,1)\,0.03)`, 40 s.
   - Playing these added "castplay test tone" and "castplay sync beeps" to the Music library; the user was told.
-- **Receiver: it can't run on the same Mac as the sender** (both need PTP UDP 319/320). It runs in a temporary pod on k3s node `moro` (192.168.1.198, `eno1`):
+- **Receiver: it can't run on the same Mac as the sender** (both need PTP UDP 319/320). Production now runs on moro (see Deployment below). For a test build, stop or scale down the production Deployment first, or the test pod will fight it for the ports. The old temporary pod setup was:
   - **Where:** namespace `castplay-test`, pod `castplay-test`, created with the user's OK.
   - **Pod spec:** `alpine:3.20` sleeping, hostNetwork, nodeSelector moro.
   - **Manifest:** in the session scratchpad `castplay-test-pod.yaml`. If it's gone, recreate it: Namespace + Pod, hostNetwork, `dnsPolicy ClusterFirstWithHostNet`, `restartPolicy Never`, `command ["sleep","86400"]`.
@@ -75,9 +75,15 @@ Read DESIGN.md §8–§9 first: the spike results, the decisions (Cast Streaming
 
 ## After this task
 
-1. **Deployment (asked about, not started).** Container image (Go static binary + ffmpeg with libopus; e.g. alpine), a terraform module in `/Users/jason/Workspace/tmphouse-infrastructure/modules/tmphouse/` modelled on `airconnect.tf`, then remove airconnect and the `castplay-test` namespace.
-   - **Pod setup:** hostNetwork, nodeSelector moro, a hostPath volume for `-state` (persistent identities), `-iface eno1`.
-   - **Before applying:** ask where to host the image, and show the plan before any `terraform apply`.
+1. **Deployment: DONE (2026-10-25).**
+   - **Image:** public at `ghcr.io/1lann/castplay`, built by `.github/workflows/docker.yml` on every push to main. The run summary prints the digest.
+   - **Terraform:** `tmphouse-infrastructure/modules/tmphouse/castplay.tf` replaced `airconnect.tf`.
+     - Namespace `castplay`; hostNetwork on moro with `-iface eno1`.
+     - Runs as uid 1000 with only NET_BIND_SERVICE (the binary has a setcap for PTP).
+     - State lives in hostPath `/home/ubuntu/castplay`.
+   - **Applying:** pushing tmphouse-infrastructure master auto-applies via Terraform Cloud; don't apply locally. To upgrade, bump `castplay_image` to the new digest and push.
+   - airconnect and the `castplay-test` namespace are gone. Logs: `kubectl -n castplay logs deploy/castplay`.
+   - It also bridges the TV "50S546" (Smart TV Pro); use `-include`/`-exclude` args in the tf if that's unwanted.
 2. **Test from an iPhone** (iOS uses buffered AAC; untested so far).
 3. **Cast groups over Cast Streaming** (untested; there's no group on this network).
 4. **More sync runs** to firm up the `-output-latency` calibration, ideally per model.
