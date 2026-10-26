@@ -62,7 +62,10 @@ type StreamInfo struct {
 	Format         Format
 	Sender         string // sender's name or address
 	TimingProtocol string // "PTP" or "NTP"
-	// Remote is the sender's DACP endpoint for sending volume changes back,
+	// Events is the session's reverse channel, for sending volume changes
+	// and play/pause back to the sender.
+	Events *EventChannel
+	// Remote is the sender's DACP endpoint, the older way to do the same;
 	// nil if the sender didn't offer one.
 	Remote *dacp.Remote
 }
@@ -183,7 +186,7 @@ type session struct {
 	sender    string
 	remote    *dacp.Remote
 	timing    string
-	events    net.Listener
+	events    *EventChannel
 	streams   map[uint64]*stream
 	closed    chan struct{}
 }
@@ -378,15 +381,14 @@ func (s *session) setup(req *request) (*response, error) {
 			s.r.player.TimingPeers(peers)
 		}
 		if s.events == nil {
-			if s.events, err = net.Listen("tcp", ":0"); err != nil {
+			if s.events, err = newEventChannel(s); err != nil {
 				return nil, err
 			}
-			go discardConns(s.events)
 		}
 		s.log.Info("session setup", "sender", s.sender, "timing", s.timing,
 			"client", req.Header.Get("User-Agent"), "remoteControl", s.remote != nil)
 		return plistResponse(map[string]any{
-			"eventPort":  s.events.Addr().(*net.TCPAddr).Port,
+			"eventPort":  s.events.port(),
 			"timingPort": 0,
 			"timingPeerInfo": map[string]any{
 				"Addresses": []any{s.r.cfg.IP.String()},
@@ -406,7 +408,7 @@ func (s *session) setup(req *request) (*response, error) {
 		}
 		s.streams[st.id] = st
 		out = append(out, st.descriptor())
-		s.r.player.StreamStarted(StreamInfo{ID: st.id, Type: st.typ, Format: st.format, Sender: s.sender, TimingProtocol: s.timing, Remote: s.remote})
+		s.r.player.StreamStarted(StreamInfo{ID: st.id, Type: st.typ, Format: st.format, Sender: s.sender, TimingProtocol: s.timing, Events: s.events, Remote: s.remote})
 		s.log.Info("stream setup", "type", st.typ, "format", st.format.String(), "dataPort", st.dataPort(), "id", st.id)
 	}
 	return plistResponse(map[string]any{"streams": out})
@@ -577,22 +579,8 @@ func (s *session) stopStreams() {
 func (s *session) close() {
 	s.stopStreams()
 	if s.events != nil {
-		s.events.Close()
+		s.events.close()
 	}
 	s.raw.Close()
 	close(s.closed)
-}
-
-// discardConns accepts connections on ln (the event channel) and drains them.
-func discardConns(ln net.Listener) {
-	for {
-		c, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		go func() {
-			io.Copy(io.Discard, c)
-			c.Close()
-		}()
-	}
 }

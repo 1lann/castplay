@@ -106,3 +106,28 @@ func TestTLVFragments(t *testing.T) {
 		t.Fatalf("round trip failed: %v", err)
 	}
 }
+
+// The sender's side of the event channel (pyatv: output Events-Write,
+// input Events-Read) must read what the accessory writes.
+func TestEventConnKeys(t *testing.T) {
+	shared := randBytes(t, 64)
+	a, b := net.Pipe()
+	acc, err := NewEventConn(a, shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := newConn(b, shared, "Events-Salt", "Events-Write-Encryption-Key", "Events-Read-Encryption-Key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go acc.Write([]byte("POST /command RTSP/1.0\r\n\r\n"))
+	buf := make([]byte, 64)
+	n, err := sender.Read(buf)
+	if err != nil || string(buf[:n]) != "POST /command RTSP/1.0\r\n\r\n" {
+		t.Fatalf("sender read %q, %v", buf[:n], err)
+	}
+	go sender.Write([]byte("RTSP/1.0 200 OK\r\n\r\n"))
+	if n, err = acc.Read(buf); err != nil || string(buf[:n]) != "RTSP/1.0 200 OK\r\n\r\n" {
+		t.Fatalf("accessory read %q, %v", buf[:n], err)
+	}
+}

@@ -99,3 +99,11 @@ func (c *Conn) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+// NewEventConn derives the event-channel keys. The sender opens this
+// connection but the accessory sends the requests, and the key roles are
+// the reverse of the control channel's: the accessory writes with the
+// "Write" key and reads with the "Read" key (as pair_ap's server cipher).
+func NewEventConn(c net.Conn, shared []byte) (*Conn, error) {
+	return newConn(c, shared, "Events-Salt", "Events-Read-Encryption-Key", "Events-Write-Encryption-Key")
+}

@@ -49,17 +49,22 @@ type Speaker struct {
 	cfg Config
 	log *slog.Logger
 
-	mu      sync.Mutex
-	cond    *sync.Cond
-	format  airplay.Format
-	queue   []airplay.Packet
-	epoch   int // bumped whenever playback must stop (pause, flush, teardown)
-	tc      *media.Transcoder
-	volume  float64 // last AirPlay dB
-	hasVol  bool
-	remote  *dacp.Remote // the sender's, for volume changes made on the Cast side
-	idle    *time.Timer
-	running bool
+	mu     sync.Mutex
+	cond   *sync.Cond
+	format airplay.Format
+	queue  []airplay.Packet
+	epoch  int // bumped whenever playback must stop (pause, flush, teardown)
+	tc     *media.Transcoder
+	volume float64 // last AirPlay dB
+	hasVol bool
+	remote *dacp.Remote // the sender's, for volume changes made on the Cast side
+	events *airplay.EventChannel
+	// A volume change pushed to the sender: until pushedAt+echoWindow, its
+	// SET_PARAMETER echoes between pushedFrom and pushedTo (dB) are ignored.
+	pushedFrom, pushedTo float64
+	pushedAt             time.Time
+	idle                 *time.Timer
+	running              bool
 
 	castMu    sync.Mutex
 	cc        *cast.Client
@@ -92,6 +97,7 @@ func (s *Speaker) StreamStarted(info airplay.StreamInfo) {
 	s.stopLocked()
 	s.format = info.Format
 	s.remote = info.Remote
+	s.events = info.Events
 	s.queue = s.queue[:0]
 	s.running = true
 	if s.idle != nil {
@@ -163,8 +169,27 @@ func (s *Speaker) Flush(f airplay.Flush) {
 func (s *Speaker) Volume(db float64) {
 	s.mu.Lock()
 	s.volume, s.hasVol = db, true
+	echo := time.Since(s.pushedAt) < echoWindow && s.isPushEcho(db)
 	s.mu.Unlock()
+	if echo {
+		s.log.Debug("volume echo from sender", "airplayDB", db)
+		return
+	}
 	go s.applyVolume(db)
+}
+
+// echoWindow is how long the sender's SET_PARAMETER volume echoes of a
+// change pushed to it are recognised.
+const echoWindow = 3 * time.Second
+
+// isPushEcho reports whether db lies on the path of the last volume change
+// pushed to the sender (the steps echo too); called with mu held.
+func (s *Speaker) isPushEcho(db float64) bool {
+	lo, hi := math.Min(s.pushedFrom, s.pushedTo), math.Max(s.pushedFrom, s.pushedTo)
+	if lo <= -30 {
+		lo = math.Inf(-1) // the bottom of the slider and mute
+	}
+	return db >= lo-0.3 && db <= hi+0.3
 }
 
 func (s *Speaker) TimingPeers(addrs []string) {
@@ -539,7 +564,8 @@ func (s *Speaker) noteVolumeSet(level float64, muted bool) {
 
 // castVolume handles the device volume from a RECEIVER_STATUS. If it isn't
 // the echo of our own last set, someone changed it on the Cast side, and
-// the AirPlay sender's slider is moved to match over DACP. A set can take a
+// the AirPlay sender's slider is moved to match over the event channel (or
+// DACP for senders that offer it). A set can take a
 // second to apply, with statuses still showing the old level until then,
 // so everything counts as an echo until one matches the set (or 5 s pass).
 func (s *Speaker) castVolume(level float64, muted bool) {
@@ -567,12 +593,34 @@ func (s *Speaker) castVolume(level float64, muted bool) {
 		vo, db = int(math.Round(pct*100)), pct*30-30
 	}
 	s.mu.Lock()
-	remote := s.remote
+	remote, events := s.remote, s.events
+	from := -1.0
+	if s.hasVol && s.volume > -144 {
+		from = math.Max(0, s.volume/30+1)
+	}
+	s.pushedFrom, s.pushedTo, s.pushedAt = math.Max(-30, from*30-30), db, time.Now()
+	if from < 0 {
+		s.pushedFrom = db
+	}
 	// The sender will echo the new volume back as SET_PARAMETER; record it
 	// now so a Cast session restart re-applies the right level.
 	s.volume, s.hasVol = db, true
 	s.mu.Unlock()
 	s.log.Info("volume changed on Cast device", "cast", fmt.Sprintf("%.2f", level), "muted", muted, "airplay", vo)
+	if events != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			// Muting moves the slider to the bottom; the sender has no
+			// separate mute for a speaker.
+			if err := events.SetVolume(ctx, from, float64(vo)/100); err != nil {
+				s.log.Warn("send volume to AirPlay sender", "err", err)
+			} else {
+				s.log.Debug("sent volume to AirPlay sender", "from", from, "to", float64(vo)/100)
+			}
+		}()
+		return
+	}
 	if remote == nil {
 		return
 	}
