@@ -33,6 +33,8 @@ const (
 	TypeGetVolumeResult      = 50
 	TypeSetVolume            = 51
 	TypeVolumeDidChange      = 52
+	TypeVolumeCapabilities   = 64
+	TypeUpdateOutputDevice   = 65
 )
 
 // ProtocolMessage fields and the extensions used here.
@@ -54,6 +56,8 @@ const (
 	extGetVolumeResult      = 54
 	extSetVolume            = 55
 	extVolumeDidChange      = 56
+	extVolumeCapabilities   = 68
+	extUpdateOutputDevice   = 69
 )
 
 // Message is one decoded ProtocolMessage: its header and the raw bytes of

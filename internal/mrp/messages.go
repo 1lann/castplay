@@ -1,6 +1,9 @@
 package mrp
 
-import "time"
+import (
+	"cmp"
+	"time"
+)
 
 // PlaybackState (Common.proto PlaybackState.Enum).
 type PlaybackState int
@@ -40,6 +43,18 @@ type DeviceInfo struct {
 	ModelName        string // localizedModelName, e.g. "Google Home Max"
 	ModelID          string
 	GroupID          string // AirPlay group UUID
+	// OutputDeviceUID is the speaker as an AirPlay output device: its
+	// AirPlay deviceID.
+	OutputDeviceUID string
+}
+
+// outputDeviceUIDs are the IDs a sender may know the speaker's output
+// device by; volume messages are sent for each.
+func (d DeviceInfo) outputDeviceUIDs() []string {
+	if d.OutputDeviceUID == "" || d.OutputDeviceUID == d.UniqueIdentifier {
+		return []string{d.UniqueIdentifier}
+	}
+	return []string{d.OutputDeviceUID, d.UniqueIdentifier}
 }
 
 func (d DeviceInfo) encode() enc {
@@ -238,6 +253,37 @@ func getVolumeResult(id string, v float64) enc {
 
 func volumeDidChange(v float64, deviceUID string) enc {
 	return protocolMessage(TypeVolumeDidChange, "", extVolumeDidChange, enc(nil).float(1, v).str(3, deviceUID))
+}
+
+// volumeCapabilities says an output device's volume can be set.
+func volumeCapabilities(deviceUID string) enc {
+	return protocolMessage(TypeVolumeCapabilities, "", extVolumeCapabilities, enc(nil).
+		msg(1, enc(nil).bool(1, true).int(2, 2)).
+		str(4, deviceUID))
+}
+
+// updateOutputDevice describes the speaker as an AirPlay output device
+// with settable volume.
+func updateOutputDevice(d DeviceInfo, v float64) enc {
+	desc := enc(nil).
+		str(1, d.Name).
+		str(2, cmp.Or(d.OutputDeviceUID, d.UniqueIdentifier)).
+		str(3, d.GroupID).
+		str(4, d.ModelID).
+		bool(7, true).  // isRemoteControllable
+		bool(8, true).  // isGroupLeader
+		bool(9, true).  // isGroupable
+		int(10, 1).     // deviceType AirPlay
+		int(11, 1).     // deviceSubType Speaker
+		bool(25, true). // isVolumeControlAvailable
+		bool(29, true). // supportsBufferedAirPlay
+		bool(36, true). // isAddedToHomeKit
+		int(37, 2).     // volumeCapabilities Absolute
+		str(51, d.GroupID)
+	if v >= 0 {
+		desc = desc.float(24, v)
+	}
+	return protocolMessage(TypeUpdateOutputDevice, "", extUpdateOutputDevice, enc(nil).msg(1, desc))
 }
 
 func parseSetVolume(m *Message) float64 { return m.Ext(extSetVolume).float(1) }

@@ -61,7 +61,7 @@ func NewServer(cfg Config) *Server {
 
 // Open starts serving a new channel.
 func (s *Server) Open(ch Channel) {
-	p := &peer{ch: ch, log: s.log.With("channel", ch.String()), out: make(chan []byte, 32), done: make(chan struct{})}
+	p := &peer{ch: ch, log: s.log.With("channel", ch.String()), out: make(chan []byte, 64), done: make(chan struct{})}
 	s.mu.Lock()
 	s.peers[ch] = p
 	s.mu.Unlock()
@@ -147,9 +147,14 @@ func (s *Server) subscribe(p *peer, why string) {
 	p.subscribed = true
 	p.log.Debug("remote control: subscribed", "why", why)
 	if s.cfg.SetVolume != nil {
+		d := s.cfg.Device
 		p.send(volumeAvailability())
-		if s.vol >= 0 {
-			p.send(volumeDidChange(s.vol, s.cfg.Device.UniqueIdentifier))
+		p.send(updateOutputDevice(d, s.vol))
+		for _, uid := range d.outputDeviceUIDs() {
+			p.send(volumeCapabilities(uid))
+			if s.vol >= 0 {
+				p.send(volumeDidChange(s.vol, uid))
+			}
 		}
 	}
 	s.pushLocked(p)
@@ -190,7 +195,10 @@ func (s *Server) SetVolume(v float64) {
 	}
 	for _, p := range s.peers {
 		if p.subscribed {
-			p.send(volumeDidChange(v, s.cfg.Device.UniqueIdentifier))
+			p.send(updateOutputDevice(s.cfg.Device, v))
+			for _, uid := range s.cfg.Device.outputDeviceUIDs() {
+				p.send(volumeDidChange(v, uid))
+			}
 		}
 	}
 }
@@ -284,6 +292,9 @@ const errNoCommands = constErr("mrp: commands not supported")
 // send queues a message for the sender, dropping it if the sender is not
 // keeping up.
 func (p *peer) send(m enc) {
+	if len(m) > 1 && m[0] == 0x08 {
+		p.log.Debug("mrp send", "type", m[1])
+	}
 	select {
 	case p.out <- Frame(m):
 	case <-p.done:
