@@ -2,68 +2,45 @@
 
 Read DESIGN.md §8–§9 first: the spike results, the decisions (Cast Streaming as output, 100 ms target, ffmpeg AAC→Opus), and implementation status. This file covers only the work in progress and what comes after it.
 
-## Current task (user request): Cast content on Apple devices ("part 2")
+## Current task: Cast content on Apple devices (MediaRemote): DONE, verified (2026-10-26)
 
-**Goal:** when the Home Max plays Cast-native content (Spotify, YouTube Music, "Hey Google, play…"), Apple devices see it the way they see a HomePod: Control Center and the Home app's speaker tile show title, artist, artwork and play state, and play/pause/next/previous from the iPhone control the Cast app.
+Apple devices see and control the speaker the way they do a HomePod (Control Center, Home app tile). Enabled by `-rc-relay`.
 
-- **Part 1, watching the Cast side: easy, not started.** Standard Cast protocol.
-- **Part 2, showing it on Apple devices:** MediaRemote (MRP) over AirPlay. The experiment is done; the build has not started.
-- The user approved building both parts. They chose not to switch audio to Cast media mode for next/previous or metadata during AirPlay playback: the mirroring app castplay streams into has no media commands and a fixed title, and media mode costs 4–9 s of latency.
+**Verified by the user on the Home Max:**
+- Spotify Connect on the speaker: track, artwork, play/pause/next show and work on the iPhone.
+- Apple Music AirPlayed from the Mac through castplay: the iPhone shows the Mac's track and controls it.
+- Volume slider: enabled, and lands where it's left.
 
-### What the experiment established (2026-10-26)
+**How it works:**
+- **Transport** (`internal/airplay/remote.go`):
+  - Each Apple device opens a type 130 stream: SETUP with no seed, reply `{type: 130, streamID}` with no dataPort.
+  - MRP frames (varint-length ProtocolMessages) arrive as `POST /command {params: {data}}` on the control connection.
+  - Replies go out as the same request on the event channel, with `X-Apple-StreamID`.
+  - The Apple TV opens two channels on one session.
+- **MRP device** (`internal/mrp`, hand-encoded protowire; field numbers from pyatv's protos):
+  - DEVICE_INFO reply.
+  - On CLIENT_UPDATES_CONFIG, push: volume availability (17), capabilities (64), VOLUME_DID_CHANGE (52), UPDATE_OUTPUT_DEVICE (65), SET_NOW_PLAYING_CLIENT and SET_STATE.
+  - Artwork answers PLAYBACK_QUEUE_REQUEST. SEND_COMMAND gets a result. SET_VOLUME is serialised, newest wins.
+  - Every other request carrying an identifier gets a GENERIC reply.
+  - The speaker's one UID is the AirPlay `deviceid` (deviceUID, groupedDevices[0], volume messages).
+  - The Home app's SET_VOLUME carries no outputDeviceUID. It is unknown which of 17/64/65 enabled the slider.
+- **Sources** (`internal/bridge/remote.go`):
+  - While an AirPlay sender streams through castplay, show its DMAP text, progress and artwork (feature bit 15 added); commands go to the sender over the event channel.
+  - Otherwise show the `cast.Monitor` state: an always-on Cast connection that follows the running media app, ignoring 85CDB22F. Commands become Cast media PLAY/PAUSE/STOP/SEEK/QUEUE_UPDATE jump.
+  - The AirPlay app is assumed to be Music (com.apple.Music); the sender doesn't say.
 
-- **The flag works.** With status flag bit 11 (`RemoteControlRelay`) advertised (`-rc-relay`), every Apple device on the LAN opens a MediaRemote channel to castplay within seconds: the iPhone (.254), the Mac "Aoigin" (.242), and the Apple TV "Living Room" (.229, AppleTV14,1). The speaker is in the user's Home (Home add works); it is unknown whether that is required.
-- **How a device opens the channel:**
-  - It sends a phase-2 `SETUP` with one stream `{type: 130, controlType: 1, channelID, clientUUID, clientTypeUUID: 1910A70F-DBC0-4242-AF95-115DB30604E1}`, with **no `seed`**.
-  - Answer as shairport-sync does with no seed: `{streams: [{type: 130, streamID}]}`, **no `dataPort`**. If given a dataPort, devices never connect to it.
-  - The channel then rides the **shared control connection**: the device sends `POST /command` with bplist `{params: {data: <bytes>}}` and no `type`.
-  - `data` is one MRP `ProtocolMessage`, prefixed with its varint length (as on pyatv's MRP wire).
-- **The first message is always `DEVICE_INFO_MESSAGE` (type 15)**, with `identifier` (field 2), `uniqueIdentifier` (field 85) and `DeviceInfoMessage` as extension field 20. Decoded examples from the iPhone:
-  - name "Chuie's iPhone", modelID iPhone18,1, build 24A446;
-  - protocolVersion 1, lastSupportedMessageType 139;
-  - systemMediaApplication com.apple.Music, routingContextID, airPlayGroupID.
-- **Nothing answers yet.** castplay replies 200 with an empty body. After ~10 s the device TEARDOWNs the 130 stream and retries, which is why the speaker tile shows "Connecting…" / "Tap to connect".
-- **Unknown: how the receiver sends MRP messages back.**
-  - Best guess: the event channel (`internal/airplay/events.go`), as a mirrored `POST /command {params: {data: <varint-len + ProtocolMessage>}}`.
-  - Alternative: the response body of the device's own `/command`.
-  - Also log the `/command` request headers, which may carry the channelID.
-  - The Mac's AirPlay framework strings mention `rcsUsesSharedConnection`, `remoteConrolSessionCreate` and `endpoint_handleRemoteControlSessionEvent`.
-
-### Plan
-
-1. **Find the reply path.**
-   - Reply to `DEVICE_INFO` with castplay's own `DEVICE_INFO_MESSAGE`, echoing the request's `identifier`. Fill in: uniqueIdentifier = speaker pairing ID, name, localizedModelName "Google Home Max", protocolVersion 1, lastSupportedMessageType 139, deviceUID / modelID.
-   - Try the event channel first. Log every incoming MRP message (type number + decoded fields) to see what follows. Expect, as in pyatv's client flow: SET_CONNECTION_STATE (38), CLIENT_UPDATES_CONFIG (16), GET_STATE (3), PLAYBACK_QUEUE_REQUEST (32), SEND_COMMAND (1).
-2. **Minimal MRP device** (new package, e.g. `internal/mrp`, hand-encoded with `google.golang.org/protobuf/encoding/protowire`; no codegen, since protoc isn't installed):
-   - **Push state:** send `SET_STATE_MESSAGE` (4, ext 9). It carries NowPlayingInfo or a PlaybackQueue of ContentItem + ContentItemMetadata (title/artist/album/duration/elapsed/artwork), supportedCommands (CommandInfo list), playbackState and playerPath (Origin / NowPlayingClient / NowPlayingPlayer).
-   - **Answer requests:** PLAYBACK_QUEUE_REQUEST (with artwork), and SEND_COMMAND (1, ext 6) → SEND_COMMAND_RESULT (2, ext 7).
-   - Possibly also SET_NOW_PLAYING_CLIENT / PLAYER (46/47).
-   - **Proto reference:** pyatv `pyatv/protocols/mrp/protobuf/*.proto` (`gh api repos/postlund/pyatv/contents/pyatv/protocols/mrp/protobuf/<Name>.proto -H "Accept: application/vnd.github.raw"`). Extension numbers on ProtocolMessage:
-     - SendCommand 6, SendCommandResult 7, SetState 9, SetArtwork 10;
-     - DeviceInfo 20, ClientUpdatesConfig 21, VolumeControlAvailability 22;
-     - PlaybackQueueRequest 37, SetConnectionState 42;
-     - SetNowPlayingClient 50, SetNowPlayingPlayer 51;
-     - GetVolume 53, SetVolume 55, UpdateContentItem 60.
-   - Still to read: ContentItemMetadata.proto, CommandInfo.proto, and the Command / PlaybackState enums in Common.proto.
-3. **Cast monitor (part 1):**
-   - One always-on `cast.Client` per speaker, connected to receiver-0 and watching RECEIVER_STATUS.
-   - When an app other than castplay's mirroring app (85CDB22F) runs, CONNECT to its transportId and GET_STATUS on `urn:x-cast:com.google.cast.media`. Follow MEDIA_STATUS: media.metadata title/artist/albumName/images, playerState, currentTime, duration, supportedMediaCommands.
-   - Commands map to media PLAY/PAUSE/STOP, QUEUE_NEXT/QUEUE_PREV (or QUEUE_UPDATE jump ±1), and SEEK.
-4. **Wiring:**
-   - The Cast monitor feeds the MRP device: state changes push SET_STATE; commands from the iPhone go to the Cast app.
-   - While castplay itself is streaming (85CDB22F active), report nothing (the iPhone is the source).
-5. **Test:** cast Spotify/YouTube Music to the Home Max; check the iPhone's Control Center and the Home app tile; try play/pause/next.
-
-### State of things right now
-
-- **Production runs a dev build**, not the tf image: `docker.io/library/castplay:dev-cca67f0-…`, loaded by `tools/deploy-dev.sh`.
-- **tmphouse-infrastructure pins** `ghcr…@sha256:3340433c…` (probe iteration 2) with args `-iface eno1 -v -rc-relay`. Any infra push resets the Deployment to that.
-- **While `-rc-relay` is on, all Apple devices show the speaker tile as "Connecting…".** Playback is unaffected. Remove the flag (or finish this) before leaving it.
-- **castplay commits not pushed to GitHub:** `ab54940`, `d3bf259`, `cca67f0` (probe iterations, deploy-dev.sh, workflow `paths-ignore` for `**.md` and `tools/**`).
-  - ab54940 was pushed and built by CI (that's the 3340433c image); d3bf259 and cca67f0 are local only.
-  - Pushing main costs Actions quota. Push only for releases.
-- **Probe code:** `internal/airplay/rcprobe.go`. It logs "remote control stream requested", "sender command" and "sender command data" (hex). The `RemoteControlRelay` config is wired via `-rc-relay`.
-  - Decode logged data with a raw protobuf walker: varint length, then fields. There's no protoc here.
+**Loose ends:**
+- **Not released.** Production runs the dev image `castplay:dev-42be171-…` from `tools/deploy-dev.sh`.
+  - tmphouse-infrastructure still pins the old probe image (`ghcr…@sha256:3340433c…`), args `-iface eno1 -v -rc-relay`.
+  - Any infra push reverts to the probe, and the tiles go back to "Connecting…".
+  - To release: push castplay main (CI builds), bump the digest in `modules/tmphouse/castplay.tf`, consider dropping `-v`, push (TFC auto-applies).
+- **Unpushed castplay commits** since ab54940: d3bf259, cca67f0, 807e155, 7f202a4, 29002b8, ba8d830, 21e395c, 42be171.
+- **Untested:**
+  - YouTube Music and other Cast apps.
+  - QUEUE_UPDATE jump for next/previous on apps other than Spotify.
+  - Seek from the phone.
+  - Multiple speakers or groups.
+  - An iPhone that is itself the AirPlay sender.
 
 ### How to test builds (user preference: no GitHub Actions for iterations)
 
