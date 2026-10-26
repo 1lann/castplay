@@ -24,10 +24,15 @@ const (
 	TypeSetState             = 4
 	TypeDeviceInfo           = 15
 	TypeClientUpdatesConfig  = 16
+	TypeVolumeAvailability   = 17
 	TypePlaybackQueueRequest = 32
 	TypeSetConnectionState   = 38
 	TypeGeneric              = 42
 	TypeSetNowPlayingClient  = 46
+	TypeGetVolume            = 49
+	TypeGetVolumeResult      = 50
+	TypeSetVolume            = 51
+	TypeVolumeDidChange      = 52
 )
 
 // ProtocolMessage fields and the extensions used here.
@@ -44,7 +49,11 @@ const (
 	extClientUpdatesConfig  = 21
 	extPlaybackQueueRequest = 37
 	extSetConnectionState   = 42
+	extVolumeAvailability   = 22
 	extSetNowPlayingClient  = 50
+	extGetVolumeResult      = 54
+	extSetVolume            = 55
+	extVolumeDidChange      = 56
 )
 
 // Message is one decoded ProtocolMessage: its header and the raw bytes of

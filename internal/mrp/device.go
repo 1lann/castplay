@@ -18,6 +18,9 @@ type Config struct {
 	Device DeviceInfo
 	// Command carries out a sender's command; nil rejects them all.
 	Command func(ctx context.Context, c SendCommand) error
+	// SetVolume sets the speaker's volume, 0..1; nil leaves volume control
+	// unavailable.
+	SetVolume func(ctx context.Context, v float64) error
 	// Artwork fetches the image at url scaled to about width pixels.
 	Artwork func(ctx context.Context, url string, width int) (*Artwork, error)
 	Log     *slog.Logger
@@ -31,6 +34,7 @@ type Server struct {
 
 	mu    sync.Mutex
 	np    NowPlaying
+	vol   float64 // speaker volume 0..1, -1 if unknown
 	peers map[Channel]*peer
 	art   struct {
 		id    string
@@ -52,7 +56,7 @@ type peer struct {
 }
 
 func NewServer(cfg Config) *Server {
-	return &Server{cfg: cfg, log: cfg.Log, peers: map[Channel]*peer{}}
+	return &Server{cfg: cfg, log: cfg.Log, vol: -1, peers: map[Channel]*peer{}}
 }
 
 // Open starts serving a new channel.
@@ -118,6 +122,13 @@ func (s *Server) handle(p *peer, m *Message) {
 		go s.answerQueue(p, m)
 	case TypeSendCommand:
 		go s.command(p, m)
+	case TypeGetVolume:
+		s.mu.Lock()
+		v := max(s.vol, 0)
+		s.mu.Unlock()
+		p.send(getVolumeResult(m.Identifier, v))
+	case TypeSetVolume:
+		go s.setVolume(p, m)
 	default:
 		if m.Identifier != "" {
 			p.send(genericMessage(m.Identifier))
@@ -135,6 +146,12 @@ func (s *Server) subscribe(p *peer, why string) {
 	}
 	p.subscribed = true
 	p.log.Debug("remote control: subscribed", "why", why)
+	if s.cfg.SetVolume != nil {
+		p.send(volumeAvailability())
+		if s.vol >= 0 {
+			p.send(volumeDidChange(s.vol, s.cfg.Device.UniqueIdentifier))
+		}
+	}
 	s.pushLocked(p)
 }
 
@@ -157,6 +174,38 @@ func (s *Server) SetNowPlaying(np NowPlaying) {
 		if p.subscribed {
 			s.pushLocked(p)
 		}
+	}
+}
+
+// SetVolume reports the speaker's volume (0..1) to every subscribed sender.
+func (s *Server) SetVolume(v float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if v == s.vol {
+		return
+	}
+	s.vol = v
+	if s.cfg.SetVolume == nil {
+		return
+	}
+	for _, p := range s.peers {
+		if p.subscribed {
+			p.send(volumeDidChange(v, s.cfg.Device.UniqueIdentifier))
+		}
+	}
+}
+
+func (s *Server) setVolume(p *peer, m *Message) {
+	v := min(max(parseSetVolume(m), 0), 1)
+	var err error = errNoCommands
+	if s.cfg.SetVolume != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err = s.cfg.SetVolume(ctx, v)
+		cancel()
+	}
+	p.log.Debug("remote control: set volume", "volume", v, "err", err)
+	if m.Identifier != "" {
+		p.send(genericMessage(m.Identifier))
 	}
 }
 

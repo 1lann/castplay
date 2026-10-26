@@ -30,12 +30,15 @@ type RemoteControl struct {
 	mu     sync.Mutex
 	cast   cast.NowPlaying
 	sender senderTrack
+	muted  bool // the Cast device's
 }
 
 func NewRemoteControl(dev cast.Device, info mrp.DeviceInfo, sp *Speaker, log *slog.Logger) *RemoteControl {
 	rc := &RemoteControl{log: log.With("cast", dev.Name), sp: sp}
-	rc.srv = mrp.NewServer(mrp.Config{Device: info, Command: rc.command, Artwork: mrp.FetchArtwork, Log: rc.log})
+	rc.srv = mrp.NewServer(mrp.Config{Device: info, Command: rc.command, SetVolume: rc.setVolume,
+		Artwork: mrp.FetchArtwork, Log: rc.log})
 	rc.mon = cast.NewMonitor(dev.Addr, []string{cast.AudioMirroringReceiver}, rc.castChanged, rc.log)
+	rc.mon.OnVolume(rc.castVolume)
 	sp.OnSenderTrack(rc.senderChanged)
 	return rc
 }
@@ -48,6 +51,33 @@ func (rc *RemoteControl) SetDevice(d cast.Device) { rc.mon.SetAddr(d.Addr) }
 func (rc *RemoteControl) RemoteOpened(ch *airplay.RemoteChannel)         { rc.srv.Open(ch) }
 func (rc *RemoteControl) RemoteData(ch *airplay.RemoteChannel, b []byte) { rc.srv.Data(ch, b) }
 func (rc *RemoteControl) RemoteClosed(ch *airplay.RemoteChannel)         { rc.srv.Close(ch) }
+
+// The Apple devices' volume slider is the AirPlay one: full volume is the
+// Cast level VolumeScale, as for an AirPlay sender's volume.
+func (rc *RemoteControl) scale() float64 {
+	if s := rc.sp.cfg.VolumeScale; s > 0 {
+		return s
+	}
+	return 1
+}
+
+func (rc *RemoteControl) castVolume(level float64, muted bool) {
+	rc.mu.Lock()
+	rc.muted = muted
+	rc.mu.Unlock()
+	v := min(level/rc.scale(), 1)
+	if muted {
+		v = 0
+	}
+	rc.srv.SetVolume(v)
+}
+
+func (rc *RemoteControl) setVolume(ctx context.Context, v float64) error {
+	rc.mu.Lock()
+	unmute := rc.muted && v > 0
+	rc.mu.Unlock()
+	return rc.mon.SetVolume(ctx, v*rc.scale(), unmute)
+}
 
 func (rc *RemoteControl) castChanged(c cast.NowPlaying) {
 	rc.mu.Lock()

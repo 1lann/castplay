@@ -41,6 +41,7 @@ type Monitor struct {
 	log      *slog.Logger
 	ignore   map[string]bool
 	onChange func(NowPlaying)
+	onVolume func(level float64, muted bool)
 
 	mu      sync.Mutex
 	addr    string
@@ -65,6 +66,27 @@ func NewMonitor(addr string, ignore []string, onChange func(NowPlaying), log *sl
 		m.ignore[id] = true
 	}
 	return m
+}
+
+// OnVolume registers a callback for the device volume in every
+// RECEIVER_STATUS. Call it before Run.
+func (m *Monitor) OnVolume(f func(level float64, muted bool)) { m.onVolume = f }
+
+// SetVolume sets the device volume (0..1), unmuting it if muted.
+func (m *Monitor) SetVolume(ctx context.Context, level float64, unmute bool) error {
+	m.mu.Lock()
+	c := m.c
+	m.mu.Unlock()
+	if c == nil {
+		return errors.New("cast: not connected")
+	}
+	if err := c.SetVolume(ctx, level); err != nil {
+		return err
+	}
+	if unmute {
+		return c.SetMuted(ctx, false)
+	}
+	return nil
 }
 
 // SetAddr points the monitor at the device's new address.
@@ -175,10 +197,17 @@ func (m *Monitor) receiverStatus(payload json.RawMessage) {
 					Name string `json:"name"`
 				} `json:"namespaces"`
 			} `json:"applications"`
+			Volume *struct {
+				Level float64 `json:"level"`
+				Muted bool    `json:"muted"`
+			} `json:"volume"`
 		} `json:"status"`
 	}
 	if json.Unmarshal(payload, &st) != nil {
 		return
+	}
+	if v := st.Status.Volume; v != nil && m.onVolume != nil {
+		m.onVolume(v.Level, v.Muted)
 	}
 	var app runningApp
 	for _, a := range st.Status.Applications {

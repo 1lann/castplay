@@ -226,6 +226,22 @@ func hex64(v uint64) string {
 	return string(b)
 }
 
+// volumeAvailability tells the sender it may set the speaker's volume
+// (capabilities Absolute: a level, not up/down steps).
+func volumeAvailability() enc {
+	return protocolMessage(TypeVolumeAvailability, "", extVolumeAvailability, enc(nil).bool(1, true).int(2, 2))
+}
+
+func getVolumeResult(id string, v float64) enc {
+	return protocolMessage(TypeGetVolumeResult, id, extGetVolumeResult, enc(nil).float(1, v))
+}
+
+func volumeDidChange(v float64, deviceUID string) enc {
+	return protocolMessage(TypeVolumeDidChange, "", extVolumeDidChange, enc(nil).float(1, v).str(3, deviceUID))
+}
+
+func parseSetVolume(m *Message) float64 { return m.Ext(extSetVolume).float(1) }
+
 // SendCommand is a decoded SEND_COMMAND_MESSAGE.
 type SendCommand struct {
 	Command  Command
