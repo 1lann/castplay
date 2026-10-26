@@ -88,6 +88,11 @@ func (d *dumpPlayer) Flush(f airplay.Flush) {
 
 func (d *dumpPlayer) Volume(db float64) { d.log.Info("volume", "dB", db) }
 
+func (d *dumpPlayer) Metadata(m airplay.Metadata) {
+	d.log.Info("metadata", "title", m.Title, "artist", m.Artist, "album", m.Album,
+		"progress", []uint32{m.Start, m.Current, m.End}, "artwork", len(m.Artwork))
+}
+
 func (d *dumpPlayer) TimingPeers(addrs []string) {
 	d.log.Info("timing peers", "addrs", addrs)
 	if d.ptp != nil {

@@ -131,8 +131,12 @@ type NowPlaying struct {
 	At       time.Time // when Elapsed was measured
 	Rate     float64   // 1 while playing, 0 when paused or buffering
 
-	ArtworkURL string // "" if none
-	Commands   []Command
+	// Artwork: a URL to fetch, or the image itself. ArtworkID names the
+	// image ("" derives it from the URL); a new ID makes senders refetch.
+	ArtworkURL  string
+	ArtworkData []byte
+	ArtworkID   string
+	Commands    []Command
 }
 
 // Artwork is a fetched cover image.
@@ -166,8 +170,8 @@ func setState(id string, np NowPlaying, art *Artwork) enc {
 		if !np.At.IsZero() {
 			md = md.double(35, np.Elapsed).double(74, cocoaTime(np.At))
 		}
-		if np.ArtworkURL != "" {
-			md = md.bool(19, true).str(31, artworkMIME(art)).str(80, artworkID(np.ArtworkURL))
+		if np.hasArtwork() {
+			md = md.bool(19, true).str(31, artworkMIME(art)).str(80, np.artworkID())
 		}
 		item := enc(nil).str(1, np.ItemID).msg(2, md)
 		if art != nil {
@@ -198,11 +202,16 @@ func artworkMIME(a *Artwork) string {
 	return "image/jpeg"
 }
 
-// artworkID names an image so the sender refetches only when it changes.
-func artworkID(url string) string {
+func (np NowPlaying) hasArtwork() bool { return np.ArtworkURL != "" || len(np.ArtworkData) > 0 }
+
+// artworkID names the image so the sender refetches only when it changes.
+func (np NowPlaying) artworkID() string {
+	if np.ArtworkID != "" {
+		return np.ArtworkID
+	}
 	h := uint64(14695981039346656037)
-	for i := 0; i < len(url); i++ {
-		h = (h ^ uint64(url[i])) * 1099511628211
+	for i := 0; i < len(np.ArtworkURL); i++ {
+		h = (h ^ uint64(np.ArtworkURL[i])) * 1099511628211
 	}
 	return "art-" + hex64(h)
 }

@@ -32,6 +32,11 @@ func FetchArtwork(ctx context.Context, url string, width int) (*Artwork, error) 
 	if err != nil {
 		return nil, err
 	}
+	return ScaleArtwork(b, width)
+}
+
+// ScaleArtwork re-encodes an image as a JPEG at most width pixels wide.
+func ScaleArtwork(b []byte, width int) (*Artwork, error) {
 	src, _, err := image.Decode(bytes.NewReader(b))
 	if err != nil {
 		return nil, fmt.Errorf("artwork: %w", err)

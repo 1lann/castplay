@@ -133,7 +133,7 @@ func startSpeaker(ctx context.Context, o options, d cast.Device, key string, ifc
 	if o.rcRelay {
 		rc = bridge.NewRemoteControl(d, mrp.DeviceInfo{
 			UniqueIdentifier: id.hap().PairingID, Name: d.Name, ModelName: model, ModelID: model, GroupID: id.GroupID,
-		}, log)
+		}, sp, log)
 		rcIface = rc
 		go rc.Run(sctx)
 	}

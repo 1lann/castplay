@@ -31,10 +31,10 @@ const sourceVersion = "366.0"
 
 // Feature bits advertised (airplay2-receiver's GetDefaultAirplayTwoFlags):
 // AirPlay audio, "FairPlay" (required by iOS Music even though it isn't
-// used with HomeKit pairing), metadata, PCM/ALAC/AAC, unencrypted-audio,
+// used with HomeKit pairing), metadata (artwork, progress, text), PCM/ALAC/AAC, unencrypted-audio,
 // unified advertising, buffered audio, PTP clock, HomeKit/peer management and
 // transient pairing.
-const features uint64 = 1<<9 | 1<<14 | 1<<16 | 1<<17 | 1<<18 | 1<<19 | 1<<20 | 1<<22 |
+const features uint64 = 1<<9 | 1<<14 | 1<<15 | 1<<16 | 1<<17 | 1<<18 | 1<<19 | 1<<20 | 1<<22 |
 	1<<30 | 1<<40 | 1<<41 | 1<<46 | 1<<47 | 1<<48
 
 // Player receives everything a sender does to one speaker. Calls for a
@@ -50,6 +50,8 @@ type Player interface {
 	Flush(f Flush)
 	// Volume is the sender's volume in dB: -30 (min) .. 0, or -144 for mute.
 	Volume(db float64)
+	// Metadata is the sender's track info, progress or artwork.
+	Metadata(m Metadata)
 	// TimingPeers lists the PTP peers of the session (SETUP/SETPEERS).
 	TimingPeers(addrs []string)
 	// StreamStopped is called on TEARDOWN or when the sender goes away.
@@ -495,7 +497,16 @@ func (s *session) flush() (*response, error) {
 }
 
 func (s *session) setParameter(req *request) (*response, error) {
-	if strings.HasPrefix(req.Header.Get("Content-Type"), "text/parameters") {
+	ct := req.Header.Get("Content-Type")
+	if m, ok := parseMetadata(ct, req.Body); ok {
+		s.log.Debug("metadata", "contentType", ct, "title", m.Title, "artist", m.Artist,
+			"progress", []uint32{m.Start, m.Current, m.End}, "artwork", len(m.Artwork))
+		if s.owns() {
+			s.r.player.Metadata(m)
+		}
+		return &response{Status: 200}, nil
+	}
+	if strings.HasPrefix(ct, "text/parameters") {
 		for _, line := range strings.Split(string(req.Body), "\n") {
 			k, v, ok := strings.Cut(strings.TrimSpace(line), ":")
 			if ok && strings.TrimSpace(k) == "volume" {

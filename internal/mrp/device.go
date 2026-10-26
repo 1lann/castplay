@@ -33,7 +33,7 @@ type Server struct {
 	np    NowPlaying
 	peers map[Channel]*peer
 	art   struct {
-		url   string
+		id    string
 		width int
 		a     *Artwork
 	}
@@ -166,13 +166,13 @@ func (s *Server) answerQueue(p *peer, m *Message) {
 	np := s.np
 	s.mu.Unlock()
 	var art *Artwork
-	if np.ArtworkURL != "" && q.ArtworkWidth != 0 {
+	if np.hasArtwork() && q.ArtworkWidth != 0 {
 		width := int(q.ArtworkWidth)
 		if width <= 0 || width > 600 {
 			width = 600
 		}
 		var err error
-		if art, err = s.artwork(np.ArtworkURL, width); err != nil {
+		if art, err = s.artwork(np, width); err != nil {
 			p.log.Warn("remote control: artwork", "url", np.ArtworkURL, "err", err)
 		}
 	}
@@ -181,25 +181,30 @@ func (s *Server) answerQueue(p *peer, m *Message) {
 	p.send(setState(m.Identifier, np, art))
 }
 
-func (s *Server) artwork(url string, width int) (*Artwork, error) {
+func (s *Server) artwork(np NowPlaying, width int) (*Artwork, error) {
+	id := np.artworkID()
 	s.mu.Lock()
-	if s.art.url == url && s.art.width == width {
+	if s.art.id == id && s.art.width == width {
 		a := s.art.a
 		s.mu.Unlock()
 		return a, nil
 	}
 	s.mu.Unlock()
-	if s.cfg.Artwork == nil {
-		return nil, nil
+	var a *Artwork
+	var err error
+	switch {
+	case len(np.ArtworkData) > 0:
+		a, err = ScaleArtwork(np.ArtworkData, width)
+	case s.cfg.Artwork != nil:
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		a, err = s.cfg.Artwork(ctx, np.ArtworkURL, width)
+		cancel()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	a, err := s.cfg.Artwork(ctx, url, width)
-	if err != nil {
+	if err != nil || a == nil {
 		return nil, err
 	}
 	s.mu.Lock()
-	s.art.url, s.art.width, s.art.a = url, width, a
+	s.art.id, s.art.width, s.art.a = id, width, a
 	s.mu.Unlock()
 	return a, nil
 }

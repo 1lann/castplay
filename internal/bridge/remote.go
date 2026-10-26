@@ -3,8 +3,10 @@ package bridge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"sync"
 
 	"castplay/internal/airplay"
 	"castplay/internal/cast"
@@ -16,18 +18,25 @@ import (
 // HomePod's music, and carries out their play/pause/skip/seek. It is the
 // speaker's airplay.RemoteControl.
 //
-// castplay's own streaming app is ignored: while an Apple device plays
-// through castplay, that device already knows what is playing.
+// While an AirPlay sender plays through castplay (the Cast device runs
+// castplay's own streaming app, which the monitor ignores), they see the
+// sender's track instead, and their commands go to the sender.
 type RemoteControl struct {
 	log *slog.Logger
+	sp  *Speaker
 	mon *cast.Monitor
 	srv *mrp.Server
+
+	mu     sync.Mutex
+	cast   cast.NowPlaying
+	sender senderTrack
 }
 
-func NewRemoteControl(dev cast.Device, info mrp.DeviceInfo, log *slog.Logger) *RemoteControl {
-	rc := &RemoteControl{log: log.With("cast", dev.Name)}
+func NewRemoteControl(dev cast.Device, info mrp.DeviceInfo, sp *Speaker, log *slog.Logger) *RemoteControl {
+	rc := &RemoteControl{log: log.With("cast", dev.Name), sp: sp}
 	rc.srv = mrp.NewServer(mrp.Config{Device: info, Command: rc.command, Artwork: mrp.FetchArtwork, Log: rc.log})
-	rc.mon = cast.NewMonitor(dev.Addr, []string{cast.AudioMirroringReceiver}, rc.changed, rc.log)
+	rc.mon = cast.NewMonitor(dev.Addr, []string{cast.AudioMirroringReceiver}, rc.castChanged, rc.log)
+	sp.OnSenderTrack(rc.senderChanged)
 	return rc
 }
 
@@ -40,8 +49,53 @@ func (rc *RemoteControl) RemoteOpened(ch *airplay.RemoteChannel)         { rc.sr
 func (rc *RemoteControl) RemoteData(ch *airplay.RemoteChannel, b []byte) { rc.srv.Data(ch, b) }
 func (rc *RemoteControl) RemoteClosed(ch *airplay.RemoteChannel)         { rc.srv.Close(ch) }
 
-func (rc *RemoteControl) changed(c cast.NowPlaying) {
-	rc.srv.SetNowPlaying(nowPlaying(c))
+func (rc *RemoteControl) castChanged(c cast.NowPlaying) {
+	rc.mu.Lock()
+	rc.cast = c
+	rc.publishLocked()
+	rc.mu.Unlock()
+}
+
+func (rc *RemoteControl) senderChanged(t senderTrack) {
+	rc.mu.Lock()
+	rc.sender = t
+	rc.publishLocked()
+	rc.mu.Unlock()
+}
+
+// publishLocked pushes the current source's state; called with mu held.
+func (rc *RemoteControl) publishLocked() {
+	if rc.sender.active {
+		rc.srv.SetNowPlaying(senderNowPlaying(rc.sender))
+	} else {
+		rc.srv.SetNowPlaying(nowPlaying(rc.cast))
+	}
+}
+
+// senderNowPlaying maps an AirPlay sender's track to MediaRemote state. The
+// sender doesn't say which app plays; Music is the usual one.
+func senderNowPlaying(t senderTrack) mrp.NowPlaying {
+	np := mrp.NowPlaying{
+		App:      mrp.App{BundleID: "com.apple.Music", Name: "Music", PID: 999},
+		State:    mrp.StatePaused,
+		ItemID:   t.title + "\x00" + t.artist + "\x00" + t.album,
+		Title:    t.title,
+		Artist:   t.artist,
+		Album:    t.album,
+		Duration: t.duration(),
+		Elapsed:  t.elapsed,
+		At:       t.elapsedAt,
+		Commands: []mrp.Command{mrp.CommandPlay, mrp.CommandPause, mrp.CommandTogglePlayPause,
+			mrp.CommandNextTrack, mrp.CommandPreviousTrack},
+	}
+	if t.playing {
+		np.State, np.Rate = mrp.StatePlaying, 1
+	}
+	if len(t.artwork) > 0 {
+		np.ArtworkData = t.artwork
+		np.ArtworkID = fmt.Sprintf("airplay-%d", t.artworkSeq)
+	}
+	return np
 }
 
 // nowPlaying maps a Cast MEDIA_STATUS to MediaRemote state.
@@ -112,8 +166,29 @@ func castApp(id, name string) mrp.App {
 
 var errUnsupported = errors.New("command not supported")
 
-// command carries out a MediaRemote command on the Cast app.
+// senderCommands maps MediaRemote commands to the AirPlay sender's.
+var senderCommands = map[mrp.Command]airplay.MediaCommand{
+	mrp.CommandPlay:            airplay.CommandPlay,
+	mrp.CommandPause:           airplay.CommandPause,
+	mrp.CommandTogglePlayPause: airplay.CommandPlayPause,
+	mrp.CommandStop:            airplay.CommandStop,
+	mrp.CommandNextTrack:       airplay.CommandNext,
+	mrp.CommandPreviousTrack:   airplay.CommandPrevious,
+}
+
+// command carries out a MediaRemote command on the AirPlay sender, or else
+// on the Cast app.
 func (rc *RemoteControl) command(ctx context.Context, c mrp.SendCommand) error {
+	rc.mu.Lock()
+	sender := rc.sender.active
+	rc.mu.Unlock()
+	if sender {
+		mc, ok := senderCommands[c.Command]
+		if !ok {
+			return errUnsupported
+		}
+		return rc.sp.SenderCommand(ctx, mc)
+	}
 	switch c.Command {
 	case mrp.CommandPlay:
 		return rc.mon.Media(ctx, "PLAY", nil)

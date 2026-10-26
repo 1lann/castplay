@@ -65,6 +65,8 @@ type Speaker struct {
 	pushedAt             time.Time
 	idle                 *time.Timer
 	running              bool
+	track                senderTrack
+	onTrack              func(senderTrack)
 
 	// Volume changes waiting for the Cast device: only the newest counts.
 	volMu   sync.Mutex
@@ -110,7 +112,10 @@ func (s *Speaker) StreamStarted(info airplay.StreamInfo) {
 		s.idle.Stop()
 		s.idle = nil
 	}
+	s.track = senderTrack{active: true, sender: info.Sender, sampleRate: float64(info.Format.SampleRate)}
+	notify := s.trackChanged()
 	s.mu.Unlock()
+	notify()
 	switch info.Format.Codec {
 	case airplay.CodecAAC, airplay.CodecALAC, airplay.CodecPCM:
 	default:
@@ -140,9 +145,15 @@ func (s *Speaker) Packet(p airplay.Packet) {
 
 func (s *Speaker) Anchor(a airplay.Anchor) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	notify := func() {}
+	defer func() {
+		s.mu.Unlock()
+		notify()
+	}()
 	s.stopLocked()
 	if a.Rate == 0 {
+		s.trackAnchor(a, time.Now())
+		notify = s.trackChanged()
 		s.log.Info("paused")
 		return
 	}
@@ -153,6 +164,8 @@ func (s *Speaker) Anchor(a airplay.Anchor) {
 			at, source = t, "ptp"
 		}
 	}
+	s.trackAnchor(a, at)
+	notify = s.trackChanged()
 	s.log.Info("play", "rtpTime", a.RTPTime, "anchorIn", time.Until(at).Round(time.Millisecond), "clock", source)
 	// Resuming after the Cast app stopped (or the idle release): bring a
 	// session up now rather than after castReady's wait.
@@ -216,6 +229,8 @@ func (s *Speaker) StreamStopped() {
 	s.stopLocked()
 	s.queue = s.queue[:0]
 	s.running = false
+	s.track = senderTrack{}
+	notify := s.trackChanged()
 	if s.idle != nil {
 		s.idle.Stop()
 	}
@@ -229,6 +244,7 @@ func (s *Speaker) StreamStopped() {
 		}
 	})
 	s.mu.Unlock()
+	notify()
 	s.log.Info("stream stopped")
 }
 
