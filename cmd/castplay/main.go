@@ -93,7 +93,8 @@ func runDump(ctx context.Context, o options, ifc net.Interface, ip net.IP, log *
 	}
 	r := airplay.NewReceiver(airplay.Config{
 		Name: o.name, DeviceID: id.DeviceID, GroupID: id.GroupID, Identity: id.hap(),
-		Model: "castplay", Port: o.basePort, IP: ip, OutputLatency: o.targetDelay + o.pipeline, Log: log,
+		Model: "castplay", Port: o.basePort, IP: ip, OutputLatency: o.targetDelay + o.pipeline,
+		HomeFile: statePath(o.stateDir, "dump-"+o.name, ".home.json"), Log: log,
 	}, &dumpPlayer{dir: o.dumpDir, log: log, ptp: startPTP(o, ip, id.DeviceID, log)})
 	if err := r.Listen(); err != nil {
 		return err

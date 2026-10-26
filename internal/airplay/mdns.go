@@ -19,15 +19,18 @@ func (r *Receiver) Advertise(ifaces []net.Interface) (*zeroconf.Server, error) {
 	if r.cfg.IP != nil {
 		ips = []string{r.cfg.IP.String()}
 	}
-	return zeroconf.RegisterProxy(r.cfg.Name, "_airplay._tcp", "local.", r.Port(), host, ips, r.txt(), ifaces)
+	srv, err := zeroconf.RegisterProxy(r.cfg.Name, "_airplay._tcp", "local.", r.Port(), host, ips, r.txt(), ifaces)
+	r.mdns = srv
+	return srv, err
 }
 
 func (r *Receiver) txt() []string {
+	flags, acl := r.home.statusFlags(), r.home.snapshot().ACL
 	return []string{
-		"acl=0",
+		fmt.Sprintf("acl=%d", acl),
 		"deviceid=" + r.cfg.DeviceID,
 		"features=" + featureString(features),
-		fmt.Sprintf("flags=%#x", statusFlags),
+		fmt.Sprintf("flags=%#x", flags),
 		"gcgl=0",
 		"gid=" + r.cfg.GroupID,
 		"manufacturer=castplay",
@@ -39,7 +42,7 @@ func (r *Receiver) txt() []string {
 		"srcvers=" + sourceVersion,
 		"pi=" + r.cfg.Identity.PairingID,
 		"pk=" + hex.EncodeToString(r.cfg.Identity.PublicKey()),
-		fmt.Sprintf("sf=%#x", statusFlags),
+		fmt.Sprintf("sf=%#x", flags),
 		"ch=2",
 		"cn=0,1,2",
 	}

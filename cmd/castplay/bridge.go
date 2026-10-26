@@ -126,7 +126,8 @@ func startSpeaker(ctx context.Context, o options, d cast.Device, key string, ifc
 	for ; port < o.basePort+1000; port++ {
 		r = airplay.NewReceiver(airplay.Config{
 			Name: d.Name, DeviceID: id.DeviceID, GroupID: id.GroupID, Identity: id.hap(),
-			Model: model, Port: port, IP: ip, OutputLatency: o.targetDelay + o.pipeline, Log: log,
+			Model: model, Port: port, IP: ip, OutputLatency: o.targetDelay + o.pipeline,
+			HomeFile: statePath(o.stateDir, key, ".home.json"), Log: log,
 		}, sp)
 		if err = r.Listen(); err == nil {
 			break

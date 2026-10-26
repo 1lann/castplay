@@ -33,7 +33,7 @@ var unsafeChars = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 // loadIdentity returns the persisted identity for key, creating it on first
 // use. key is the Cast device ID (or name for manual targets).
 func loadIdentity(dir, key string) (identity, error) {
-	path := filepath.Join(dir, "speaker-"+unsafeChars.ReplaceAllString(key, "_")+".json")
+	path := statePath(dir, key, ".json")
 	var id identity
 	if b, err := os.ReadFile(path); err == nil {
 		if err := json.Unmarshal(b, &id); err == nil && len(id.Seed) == ed25519.SeedSize {
@@ -60,6 +60,11 @@ func loadIdentity(dir, key string) (identity, error) {
 	}
 	b, _ := json.MarshalIndent(id, "", "  ")
 	return id, os.WriteFile(path, b, 0o600)
+}
+
+// statePath is a speaker's file in the state directory.
+func statePath(dir, key, suffix string) string {
+	return filepath.Join(dir, "speaker-"+unsafeChars.ReplaceAllString(key, "_")+suffix)
 }
 
 func sha256Sum(s string) []byte {

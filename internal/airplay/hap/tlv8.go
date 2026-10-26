@@ -1,5 +1,6 @@
 // Package hap implements the HomeKit pairing pieces AirPlay 2 receivers need:
-// TLV8 encoding, SRP-6a (3072-bit, SHA-512), transient Pair-Setup, Pair-Verify
+// TLV8 encoding, SRP-6a (3072-bit, SHA-512), transient Pair-Setup, Pair-Verify,
+// the Home controller list (Add, Remove and List Pairings)
 // and the ChaCha20-Poly1305 framing used on the control channel afterwards.
 //
 // The flows follow the HomeKit Accessory Protocol spec and the Python
@@ -19,10 +20,13 @@ const (
 	TagState         = 6
 	TagError         = 7
 	TagSignature     = 10
+	TagPermissions   = 11
 	TagFlags         = 19
+	TagSeparator     = 255
 )
 
 const (
+	ErrUnknown        = 1
 	ErrAuthentication = 2
 	ErrUnavailable    = 6
 )
@@ -30,6 +34,9 @@ const (
 const (
 	methodPairSetup         = 0
 	methodPairSetupWithAuth = 1
+	methodAddPairing        = 3
+	methodRemovePairing     = 4
+	methodListPairings      = 5
 	flagTransient           = 1 << 4
 )
 

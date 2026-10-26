@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"castplay/internal/airplay/hap"
+
+	"github.com/grandcat/zeroconf"
 )
 
 const sourceVersion = "366.0"
@@ -34,8 +36,6 @@ const sourceVersion = "366.0"
 // transient pairing.
 const features uint64 = 1<<9 | 1<<14 | 1<<16 | 1<<17 | 1<<18 | 1<<19 | 1<<20 | 1<<22 |
 	1<<30 | 1<<40 | 1<<41 | 1<<46 | 1<<47 | 1<<48
-
-const statusFlags = 1 << 2 // AudioLink
 
 // Player receives everything a sender does to one speaker. Calls for a
 // stream are serialised, but Packet runs on the stream's own goroutine.
@@ -112,6 +112,7 @@ type Config struct {
 	Port          int           // RTSP port (0 = any)
 	IP            net.IP        // address advertised and used for timing peers
 	OutputLatency time.Duration // reported to senders
+	HomeFile      string        // where Home pairings persist ("" = memory only)
 	Log           *slog.Logger
 }
 
@@ -120,6 +121,8 @@ type Receiver struct {
 	player Player
 	log    *slog.Logger
 	ln     net.Listener
+	home   *home
+	mdns   *zeroconf.Server
 
 	mu     sync.Mutex
 	active *session // the session that owns the player
@@ -132,6 +135,13 @@ func NewReceiver(cfg Config, p Player) *Receiver {
 
 // Listen opens the RTSP port; Port() is valid afterwards.
 func (r *Receiver) Listen() error {
+	if r.home == nil {
+		h, err := loadHome(r.cfg.HomeFile)
+		if err != nil {
+			return fmt.Errorf("load Home pairings: %w", err)
+		}
+		r.home = h
+	}
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", r.cfg.Port))
 	if err != nil {
 		return err
@@ -252,6 +262,14 @@ func (s *session) handle(req *request) (*response, error) {
 				return &response{Status: 400}, err
 			}
 			return &response{Status: 200, ContentType: "application/octet-stream", Body: body}, nil
+		case "/pair-add", "/pair-remove", "/pair-list":
+			body, err := hap.HandlePairings(s.r.home, req.Body)
+			if req.Path != "/pair-list" {
+				s.r.homeChanged(req.Path)
+			}
+			return &response{Status: 200, ContentType: "application/octet-stream", Body: body}, err
+		case "/configure":
+			return s.configure(req)
 		case "/feedback", "/command", "/audioMode", "/pair-pin-start":
 			return &response{Status: 200}, nil
 		}
@@ -302,7 +320,48 @@ func (r *Receiver) info() map[string]any {
 		"protocolVersion":          "1.1",
 		"sdk":                      "AirPlay;2.0.2",
 		"sourceVersion":            sourceVersion,
-		"statusFlags":              statusFlags,
+		"statusFlags":              r.home.statusFlags(),
+	}
+}
+
+// configure handles /configure, which Home sends after /pair-add with the
+// speaker's Home settings. The reply confirms them along with the
+// accessory's pairing identity.
+func (s *session) configure(req *request) (*response, error) {
+	body, err := req.plistBody()
+	if err != nil {
+		return &response{Status: 400}, err
+	}
+	cd, _ := body["ConfigurationDictionary"].(map[string]any)
+	if err := s.r.home.configure(cd); err != nil {
+		return &response{Status: 500}, err
+	}
+	s.r.homeChanged("/configure")
+	st := s.r.home.snapshot()
+	name := pString(cd, "Device_Name")
+	if name == "" {
+		name = s.r.cfg.Name
+	}
+	out := map[string]any{
+		"Identifier":               s.r.cfg.Identity.PairingID,
+		"PublicKey":                []byte(s.r.cfg.Identity.PublicKey()),
+		"Device_Name":              name,
+		"Enable_HK_Access_Control": st.AccessControl,
+		"Access_Control_Level":     st.ACL,
+	}
+	if st.Password != "" {
+		out["Password"] = st.Password
+	}
+	return plistResponse(out)
+}
+
+// homeChanged logs a Home pairing change and re-advertises the status flags.
+func (r *Receiver) homeChanged(what string) {
+	st := r.home.snapshot()
+	r.log.Info("home pairing changed", "request", what, "controllers", len(st.Controllers),
+		"accessControl", st.AccessControl, "acl", st.ACL)
+	if r.mdns != nil {
+		r.mdns.SetText(r.txt())
 	}
 }
 
