@@ -7,6 +7,7 @@ import (
 	"net"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"castplay/internal/airplay/hap"
@@ -32,11 +33,20 @@ func (s *session) probeRemoteControl(desc map[string]any) (map[string]any, error
 	sort.Strings(keys)
 	s.log.Info("remote control stream requested", "desc", keys)
 
+	seed, hasSeed := pUint(desc, "seed")
+	s.r.mu.Lock()
+	s.r.nextID++
+	id := s.r.nextID
+	s.r.mu.Unlock()
+	if !hasSeed {
+		// No seed: the sender uses the shared (control) connection, and the
+		// reply has no data port (as shairport-sync).
+		return map[string]any{"type": streamRemoteControl, "streamID": id}, nil
+	}
 	ln, err := net.Listen("tcp", ":0")
 	if err != nil {
 		return nil, err
 	}
-	seed, _ := pUint(desc, "seed")
 	go func() {
 		defer ln.Close()
 		ln.(*net.TCPListener).SetDeadline(time.Now().Add(time.Minute))
@@ -49,10 +59,6 @@ func (s *session) probeRemoteControl(desc map[string]any) (map[string]any, error
 		s.log.Info("remote control stream connected", "from", c.RemoteAddr())
 		s.probeDataStream(c, seed)
 	}()
-	s.r.mu.Lock()
-	s.r.nextID++
-	id := s.r.nextID
-	s.r.mu.Unlock()
 	return map[string]any{"type": streamRemoteControl, "streamID": id, "dataPort": ln.Addr().(*net.TCPAddr).Port}, nil
 }
 
@@ -103,17 +109,38 @@ func (s *session) probeDataStream(c net.Conn, seed uint64) {
 	}
 }
 
+// logCommand logs a POST /command body from the sender (probe only).
+func (s *session) logCommand(req *request) {
+	body, err := req.plistBody()
+	if err != nil {
+		s.log.Info("sender command", "len", len(req.Body), "text", printable(req.Body[:min(300, len(req.Body))]))
+		return
+	}
+	keys := make([]string, 0, len(body))
+	for k, v := range body {
+		keys = append(keys, fmt.Sprintf("%s=%v", k, summarize(v)))
+	}
+	sort.Strings(keys)
+	s.log.Info("sender command", "type", body["type"], "body", keys)
+}
+
 func summarize(v any) string {
 	switch v := v.(type) {
 	case []byte:
 		return fmt.Sprintf("<%d bytes>", len(v))
 	case map[string]any:
 		keys := make([]string, 0, len(v))
-		for k := range v {
-			keys = append(keys, k)
+		for k, x := range v {
+			keys = append(keys, k+":"+summarize(x))
 		}
 		sort.Strings(keys)
-		return fmt.Sprintf("dict%v", keys)
+		return fmt.Sprintf("{%s}", strings.Join(keys, " "))
+	case []any:
+		parts := make([]string, 0, len(v))
+		for _, x := range v {
+			parts = append(parts, summarize(x))
+		}
+		return fmt.Sprintf("[%s]", strings.Join(parts, " "))
 	}
 	return fmt.Sprint(v)
 }

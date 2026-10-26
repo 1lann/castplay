@@ -276,7 +276,12 @@ func (s *session) handle(req *request) (*response, error) {
 			return &response{Status: 200, ContentType: "application/octet-stream", Body: body}, err
 		case "/configure":
 			return s.configure(req)
-		case "/feedback", "/command", "/audioMode", "/pair-pin-start":
+		case "/command":
+			if s.r.cfg.RemoteControlRelay {
+				s.logCommand(req)
+			}
+			return &response{Status: 200}, nil
+		case "/feedback", "/audioMode", "/pair-pin-start":
 			return &response{Status: 200}, nil
 		}
 	case "SETUP":
