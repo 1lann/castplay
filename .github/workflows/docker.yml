@@ -3,6 +3,9 @@ name: Build and publish a container image
 on:
   push:
     branches: ['main']
+    # Builds cost Actions quota; docs and dev tooling don't change the image.
+    # Test builds go straight to the cluster with tools/deploy-dev.sh.
+    paths-ignore: ['**.md', 'tools/**']
   workflow_dispatch:
 
 env:
