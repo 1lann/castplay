@@ -1,4 +1,4 @@
-# castplay: handoff / next steps (2026-10-25)
+# castplay: handoff / next steps (2026-10-26)
 
 Read DESIGN.md §8–§9 first: the spike results, the decisions (Cast Streaming as output, 100 ms target, ffmpeg AAC→Opus), and implementation status. This file covers only the work in progress and what comes after it.
 
@@ -26,18 +26,33 @@ Read DESIGN.md §8–§9 first: the spike results, the decisions (Cast Streaming
   - **Residual minor jitter: cause unknown, parked.** Candidates: Cast retransmits missing the 100 ms window, or the ALAC→Opus path. Ideas: compare with Music's AAC, or try a 200 ms target.
 - Volume detection on the Cast side was confirmed with the speaker's touch controls.
 
-### 2. Volume from the Google side back to the AirPlay sender: built, BLOCKED on the sender
+### 2. Volume and pause from the Google side back to the AirPlay sender: DONE (2026-10-26)
 
-- **Detecting Cast-side changes works on the Home Max.**
-  - `cast.Client.OnVolume` reports RECEIVER_STATUS volume. `bridge.Speaker.castVolume` treats statuses as echoes of our own set until one matches it, or for 5 s; the Home Max takes about 1.1 s to apply a set and reports the old level meanwhile.
-  - Verified: an external `SetVolume(0.3)` logged "volume changed on Cast device … airplay=30".
-- **DACP client is written and unit-tested** (`internal/dacp`): mDNS `iTunes_Ctrl_<id>`, DMAP parsing, and shairport's absolute/relative volume algorithm. The speaker number is our DeviceID MAC as an integer.
-- **Blocker: macOS 27 Music (AirPlay/980.77.5) sends no `DACP-ID`/`Active-Remote`.** It isn't in any RTSP header (GET /info, SETUP, …) or in the SETUP plist, even though it advertises `iTunes_Ctrl_…` over mDNS. Without Active-Remote, DACP requests are refused.
-  - Tried advertising shairport's extra feature bits: 11 and 38 changed nothing. Bit 26 makes Music demand MFi `/auth-setup`, which then fails (error -15016). Reverted to the original bits.
-  - The code still picks the headers up (`session.handle`) for senders that do send them, such as older iTunes/iOS (unverified).
-- **Likely real mechanism for modern senders:** the AirPlay 2 event channel. The sender connects to our `eventPort` (currently `discardConns`), encrypted with HKDF "Events-Salt" keys; HomePods talk MediaRemote over it.
-  - **Needs research:** check shairport-sync's event-port handling and pyatv's AirPlay 2 / MRP code. Ask the user before investing in it.
-- `rtsp` debug log lines now include request headers, which is handy for this investigation.
+- **Mechanism: the AirPlay 2 event channel, not DACP.** macOS 27 / iOS send no `DACP-ID`/`Active-Remote`.
+  - The sender connects to the `eventPort` from SETUP. Keys are HKDF-SHA512 over the pairing secret with salt `Events-Salt`; the receiver writes with `Events-Write-Encryption-Key` and reads with `Events-Read-...` (the reverse of the control channel; see pair_ap's `cipher_new`).
+  - On connect castplay sends `POST /command` `{type: updateInfo, value: <GET /info dict + txtAirPlay>}`.
+  - Code: `internal/airplay/events.go` (`EventChannel.SetVolume`, `.Command`) and `hap.NewEventConn`.
+- **Volume:** `{type: sendMediaRemoteCommand, value: dvlc, volume: <0..1>, params: {volume}}`, stepped by 0.09 every 10 ms (shairport-sync: a big jump makes Apple Music on macOS jump its local volume).
+  - **Verified from an iPhone (2026-10-26):** every Home Max knob step moved the iPhone's slider. The iPhone didn't echo SET_PARAMETER; `Speaker.Volume` still ignores echoes on the pushed path for 3 s.
+  - **Fixed in the same test:** dragging the iPhone slider raced concurrent `applyVolume` goroutines and could leave the speaker at an earlier position. `requestVolume` now applies changes in order, newest wins, and only unmutes when muted.
+- **Pause:** the Cast mirroring app has `supportedMediaCommands: 0`. The speaker's pause button or "Hey Google, pause" stops the app, which closes our virtual connection (`cast.Client.AppClosed`). `Speaker.watchApp` then:
+  - stops playback and releases the session,
+  - sends MediaRemote pause (`modernMediaRemoteCommand: "1"`),
+  - and the next play anchor starts a new Cast session.
+  - **Deployed but untested** (image 07ddc612).
+- **Next/previous: not possible from the speaker** while using Cast Streaming, because the mirroring app has no media commands. `CommandNext`/`CommandPrevious` exist for whenever something can trigger them.
+  - The user decided not to use Cast media playback mode for this: it measured 4–9 s of latency and can't follow AirPlay anchors.
+- The DACP client (`internal/dacp`) stays as a fallback for senders that do send the headers.
+
+### 3. Adding speakers to Apple Home: built, untested
+
+- The Home app transient-pairs, opens a `timing=None` session, then sends `/pair-add` (its controller key), then `/configure`. castplay used to 404 `/pair-add` ("Unable to Add Accessory").
+- castplay now handles `/pair-add`, `/pair-remove`, `/pair-list` (`hap.HandlePairings`) and `/configure`.
+  - **State:** stored in `speaker-<id>.home.json` in the state dir (`internal/airplay/home.go`).
+  - **Advertising:** once configured, the speaker advertises status flag bit 10 (HomeKit access control) and the ACL.
+  - **Access control:** recorded and echoed back, but not enforced (pair-verify accepts anyone).
+- The user hasn't retried adding the speaker yet. If it still fails, the `-v` logs show the next unhandled request.
+- **Production runs with `-v`** (tf comment says so) for these tests; remove it when done.
 
 ## Test setup (how the previous session tested)
 
@@ -84,11 +99,10 @@ Read DESIGN.md §8–§9 first: the spike results, the decisions (Cast Streaming
    - **Applying:** pushing tmphouse-infrastructure master auto-applies via Terraform Cloud; don't apply locally. To upgrade, bump `castplay_image` to the new digest and push.
    - airconnect and the `castplay-test` namespace are gone. Logs: `kubectl -n castplay logs deploy/castplay`.
    - It also bridges the TV "50S546" (Smart TV Pro); use `-include`/`-exclude` args in the tf if that's unwanted.
-2. **Test from an iPhone** (iOS uses buffered AAC; untested so far).
+2. ~~Test from an iPhone~~: works (buffered AAC and realtime; volume both ways).
 3. **Cast groups over Cast Streaming** (untested; there's no group on this network).
 4. **More sync runs** to firm up the `-output-latency` calibration, ideally per model.
 5. Optional:
-   - Report Google-side play/pause to the sender (DACP `playpause`).
    - Metadata/artwork from SET_PARAMETER (DMAP / image) to Cast.
    - Reduce the ~100–200 ms of dropped start-up audio (target 50 ms, or start the cast session earlier).
 
@@ -100,7 +114,8 @@ Read DESIGN.md §8–§9 first: the spike results, the decisions (Cast Streaming
   - `hap/`: SRP-6a, pair-setup/verify, encrypted control channel; has tests.
   - `fairplay.go`: canned fp-setup replies.
   - `mdns.go`, `format.go` (audioFormat bits, `ALACCookie`).
-- `internal/dacp/`: DACP remote client (volume to sender).
+- `internal/airplay/events.go`: event channel (volume/MediaRemote commands to the sender); `home.go`: Home pairings and /configure.
+- `internal/dacp/`: DACP remote client (volume to sender, older senders).
 - `internal/ptp/ptp.go`: nqptp-style follower: Announce/Follow_Up, max-offset window, awakening Announce pair. `LocalTime(clockID, ns)`.
 - `internal/bridge/speaker.go`: Player → ffmpeg → Cast Streaming.
   - Capture time = play time − target − output latency.
