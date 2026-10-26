@@ -25,7 +25,7 @@ func (r *Receiver) Advertise(ifaces []net.Interface) (*zeroconf.Server, error) {
 }
 
 func (r *Receiver) txt() []string {
-	flags, acl := r.home.statusFlags(), r.home.snapshot().ACL
+	flags, acl := r.statusFlags(), r.home.snapshot().ACL
 	return []string{
 		fmt.Sprintf("acl=%d", acl),
 		"deviceid=" + r.cfg.DeviceID,

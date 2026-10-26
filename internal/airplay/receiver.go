@@ -116,7 +116,10 @@ type Config struct {
 	IP            net.IP        // address advertised and used for timing peers
 	OutputLatency time.Duration // reported to senders
 	HomeFile      string        // where Home pairings persist ("" = memory only)
-	Log           *slog.Logger
+	// RemoteControlRelay advertises the remote control relay status flag and
+	// logs the type 130 streams senders then open (experimental).
+	RemoteControlRelay bool
+	Log                *slog.Logger
 }
 
 type Receiver struct {
@@ -323,7 +326,7 @@ func (r *Receiver) info() map[string]any {
 		"protocolVersion":          "1.1",
 		"sdk":                      "AirPlay;2.0.2",
 		"sourceVersion":            sourceVersion,
-		"statusFlags":              r.home.statusFlags(),
+		"statusFlags":              r.statusFlags(),
 	}
 }
 
@@ -356,6 +359,14 @@ func (s *session) configure(req *request) (*response, error) {
 		out["Password"] = st.Password
 	}
 	return plistResponse(out)
+}
+
+func (r *Receiver) statusFlags() int {
+	f := r.home.statusFlags()
+	if r.cfg.RemoteControlRelay {
+		f |= statusRemoteControlRelay
+	}
+	return f
 }
 
 // homeChanged logs a Home pairing change and re-advertises the status flags.
@@ -398,10 +409,22 @@ func (s *session) setup(req *request) (*response, error) {
 	}
 
 	// Phase 2: audio streams. This sender now owns the speaker.
-	s.r.takeOver(s)
 	var out []any
+	tookOver := false
 	for _, rs := range rawStreams {
 		desc, _ := rs.(map[string]any)
+		if typ, _ := pInt(desc, "type"); typ == streamRemoteControl && s.r.cfg.RemoteControlRelay {
+			d, err := s.probeRemoteControl(desc)
+			if err != nil {
+				return &response{Status: 500}, err
+			}
+			out = append(out, d)
+			continue
+		}
+		if !tookOver {
+			s.r.takeOver(s)
+			tookOver = true
+		}
 		st, err := s.newStream(desc)
 		if err != nil {
 			return &response{Status: 400}, err

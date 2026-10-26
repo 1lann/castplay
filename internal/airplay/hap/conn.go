@@ -107,3 +107,14 @@ func (c *Conn) Write(p []byte) (int, error) {
 func NewEventConn(c net.Conn, shared []byte) (*Conn, error) {
 	return newConn(c, shared, "Events-Salt", "Events-Read-Encryption-Key", "Events-Write-Encryption-Key")
 }
+
+// OpenBlock decrypts one sealed block of the encrypted framing (its 2-byte
+// length header is the additional data) with a key derived from shared, for
+// probing which key a channel uses.
+func OpenBlock(shared []byte, salt, info string, counter uint64, hdr, sealed []byte) ([]byte, error) {
+	aead, err := chacha20poly1305.New(deriveKey(shared, salt, info))
+	if err != nil {
+		return nil, err
+	}
+	return aead.Open(nil, counterNonce(counter), sealed, hdr)
+}
