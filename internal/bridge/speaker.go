@@ -66,6 +66,12 @@ type Speaker struct {
 	idle                 *time.Timer
 	running              bool
 
+	// Volume changes waiting for the Cast device: only the newest counts.
+	volMu   sync.Mutex
+	volWant float64
+	volHas  bool
+	volBusy bool
+
 	castMu    sync.Mutex
 	cc        *cast.Client
 	tx        *cast.StreamingSender
@@ -175,7 +181,7 @@ func (s *Speaker) Volume(db float64) {
 		s.log.Debug("volume echo from sender", "airplayDB", db)
 		return
 	}
-	go s.applyVolume(db)
+	s.requestVolume(db)
 }
 
 // echoWindow is how long the sender's SET_PARAMETER volume echoes of a
@@ -455,7 +461,7 @@ func (s *Speaker) ensureCast() error {
 	db, has := s.volume, s.hasVol
 	s.mu.Unlock()
 	if has {
-		go s.applyVolume(db)
+		s.requestVolume(db)
 	}
 	return nil
 }
@@ -521,11 +527,42 @@ func (s *Speaker) closeCastLocked() {
 	s.cc, s.tx, s.castStop = nil, nil, nil
 }
 
+// requestVolume applies db to the Cast device. Changes are applied one at a
+// time, newest wins: a dragged slider sends many, each set takes a round
+// trip or two, and concurrent sets would land out of order.
+func (s *Speaker) requestVolume(db float64) {
+	s.volMu.Lock()
+	s.volWant, s.volHas = db, true
+	if s.volBusy {
+		s.volMu.Unlock()
+		return
+	}
+	s.volBusy = true
+	s.volMu.Unlock()
+	go func() {
+		for {
+			s.volMu.Lock()
+			if !s.volHas {
+				s.volBusy = false
+				s.volMu.Unlock()
+				return
+			}
+			db := s.volWant
+			s.volHas = false
+			s.volMu.Unlock()
+			s.applyVolume(db)
+		}
+	}()
+}
+
 // applyVolume maps AirPlay's -30..0 dB slider (-144 = mute) onto Cast's
 // 0..1 device volume, scaled by VolumeScale.
 func (s *Speaker) applyVolume(db float64) {
 	s.castMu.Lock()
 	cc := s.cc
+	// Unmute only if muted (or unknown, at session start): it costs a
+	// round trip on every step of a slider drag.
+	unmute := s.setMuted || s.setAt.IsZero()
 	s.castMu.Unlock()
 	if cc == nil {
 		return
@@ -543,8 +580,10 @@ func (s *Speaker) applyVolume(db float64) {
 	level := math.Max(0, math.Min(1, (db+30)/30)) * s.cfg.VolumeScale
 	s.log.Info("volume", "airplayDB", db, "cast", fmt.Sprintf("%.2f", level))
 	s.noteVolumeSet(level, false)
-	if err := cc.SetMuted(ctx, false); err != nil {
-		s.log.Warn("unmute", "err", err)
+	if unmute {
+		if err := cc.SetMuted(ctx, false); err != nil {
+			s.log.Warn("unmute", "err", err)
+		}
 	}
 	if err := cc.SetVolume(ctx, level); err != nil {
 		s.log.Warn("set volume", "err", err)
