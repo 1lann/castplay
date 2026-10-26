@@ -2,7 +2,75 @@
 
 Read DESIGN.md §8–§9 first: the spike results, the decisions (Cast Streaming as output, 100 ms target, ffmpeg AAC→Opus), and implementation status. This file covers only the work in progress and what comes after it.
 
-## Last task (user request): ALAC support + volume back to AirPlay
+## Current task (user request): Cast content on Apple devices ("part 2")
+
+**Goal:** when the Home Max plays Cast-native content (Spotify, YouTube Music, "Hey Google, play…"), Apple devices see it the way they see a HomePod: Control Center and the Home app's speaker tile show title, artist, artwork and play state, and play/pause/next/previous from the iPhone control the Cast app.
+
+- **Part 1, watching the Cast side: easy, not started.** Standard Cast protocol.
+- **Part 2, showing it on Apple devices:** MediaRemote (MRP) over AirPlay. The experiment is done; the build has not started.
+- The user approved building both parts. They chose not to switch audio to Cast media mode for next/previous or metadata during AirPlay playback: the mirroring app castplay streams into has no media commands and a fixed title, and media mode costs 4–9 s of latency.
+
+### What the experiment established (2026-10-26)
+
+- **The flag works.** With status flag bit 11 (`RemoteControlRelay`) advertised (`-rc-relay`), every Apple device on the LAN opens a MediaRemote channel to castplay within seconds: the iPhone (.254), the Mac "Aoigin" (.242), and the Apple TV "Living Room" (.229, AppleTV14,1). The speaker is in the user's Home (Home add works); it is unknown whether that is required.
+- **How a device opens the channel:**
+  - It sends a phase-2 `SETUP` with one stream `{type: 130, controlType: 1, channelID, clientUUID, clientTypeUUID: 1910A70F-DBC0-4242-AF95-115DB30604E1}`, with **no `seed`**.
+  - Answer as shairport-sync does with no seed: `{streams: [{type: 130, streamID}]}`, **no `dataPort`**. If given a dataPort, devices never connect to it.
+  - The channel then rides the **shared control connection**: the device sends `POST /command` with bplist `{params: {data: <bytes>}}` and no `type`.
+  - `data` is one MRP `ProtocolMessage`, prefixed with its varint length (as on pyatv's MRP wire).
+- **The first message is always `DEVICE_INFO_MESSAGE` (type 15)**, with `identifier` (field 2), `uniqueIdentifier` (field 85) and `DeviceInfoMessage` as extension field 20. Decoded examples from the iPhone:
+  - name "Chuie's iPhone", modelID iPhone18,1, build 24A446;
+  - protocolVersion 1, lastSupportedMessageType 139;
+  - systemMediaApplication com.apple.Music, routingContextID, airPlayGroupID.
+- **Nothing answers yet.** castplay replies 200 with an empty body. After ~10 s the device TEARDOWNs the 130 stream and retries, which is why the speaker tile shows "Connecting…" / "Tap to connect".
+- **Unknown: how the receiver sends MRP messages back.**
+  - Best guess: the event channel (`internal/airplay/events.go`), as a mirrored `POST /command {params: {data: <varint-len + ProtocolMessage>}}`.
+  - Alternative: the response body of the device's own `/command`.
+  - Also log the `/command` request headers, which may carry the channelID.
+  - The Mac's AirPlay framework strings mention `rcsUsesSharedConnection`, `remoteConrolSessionCreate` and `endpoint_handleRemoteControlSessionEvent`.
+
+### Plan
+
+1. **Find the reply path.**
+   - Reply to `DEVICE_INFO` with castplay's own `DEVICE_INFO_MESSAGE`, echoing the request's `identifier`. Fill in: uniqueIdentifier = speaker pairing ID, name, localizedModelName "Google Home Max", protocolVersion 1, lastSupportedMessageType 139, deviceUID / modelID.
+   - Try the event channel first. Log every incoming MRP message (type number + decoded fields) to see what follows. Expect, as in pyatv's client flow: SET_CONNECTION_STATE (38), CLIENT_UPDATES_CONFIG (16), GET_STATE (3), PLAYBACK_QUEUE_REQUEST (32), SEND_COMMAND (1).
+2. **Minimal MRP device** (new package, e.g. `internal/mrp`, hand-encoded with `google.golang.org/protobuf/encoding/protowire`; no codegen, since protoc isn't installed):
+   - **Push state:** send `SET_STATE_MESSAGE` (4, ext 9). It carries NowPlayingInfo or a PlaybackQueue of ContentItem + ContentItemMetadata (title/artist/album/duration/elapsed/artwork), supportedCommands (CommandInfo list), playbackState and playerPath (Origin / NowPlayingClient / NowPlayingPlayer).
+   - **Answer requests:** PLAYBACK_QUEUE_REQUEST (with artwork), and SEND_COMMAND (1, ext 6) → SEND_COMMAND_RESULT (2, ext 7).
+   - Possibly also SET_NOW_PLAYING_CLIENT / PLAYER (46/47).
+   - **Proto reference:** pyatv `pyatv/protocols/mrp/protobuf/*.proto` (`gh api repos/postlund/pyatv/contents/pyatv/protocols/mrp/protobuf/<Name>.proto -H "Accept: application/vnd.github.raw"`). Extension numbers on ProtocolMessage:
+     - SendCommand 6, SendCommandResult 7, SetState 9, SetArtwork 10;
+     - DeviceInfo 20, ClientUpdatesConfig 21, VolumeControlAvailability 22;
+     - PlaybackQueueRequest 37, SetConnectionState 42;
+     - SetNowPlayingClient 50, SetNowPlayingPlayer 51;
+     - GetVolume 53, SetVolume 55, UpdateContentItem 60.
+   - Still to read: ContentItemMetadata.proto, CommandInfo.proto, and the Command / PlaybackState enums in Common.proto.
+3. **Cast monitor (part 1):**
+   - One always-on `cast.Client` per speaker, connected to receiver-0 and watching RECEIVER_STATUS.
+   - When an app other than castplay's mirroring app (85CDB22F) runs, CONNECT to its transportId and GET_STATUS on `urn:x-cast:com.google.cast.media`. Follow MEDIA_STATUS: media.metadata title/artist/albumName/images, playerState, currentTime, duration, supportedMediaCommands.
+   - Commands map to media PLAY/PAUSE/STOP, QUEUE_NEXT/QUEUE_PREV (or QUEUE_UPDATE jump ±1), and SEEK.
+4. **Wiring:**
+   - The Cast monitor feeds the MRP device: state changes push SET_STATE; commands from the iPhone go to the Cast app.
+   - While castplay itself is streaming (85CDB22F active), report nothing (the iPhone is the source).
+5. **Test:** cast Spotify/YouTube Music to the Home Max; check the iPhone's Control Center and the Home app tile; try play/pause/next.
+
+### State of things right now
+
+- **Production runs a dev build**, not the tf image: `docker.io/library/castplay:dev-cca67f0-…`, loaded by `tools/deploy-dev.sh`.
+- **tmphouse-infrastructure pins** `ghcr…@sha256:3340433c…` (probe iteration 2) with args `-iface eno1 -v -rc-relay`. Any infra push resets the Deployment to that.
+- **While `-rc-relay` is on, all Apple devices show the speaker tile as "Connecting…".** Playback is unaffected. Remove the flag (or finish this) before leaving it.
+- **castplay commits not pushed to GitHub:** `ab54940`, `d3bf259`, `cca67f0` (probe iterations, deploy-dev.sh, workflow `paths-ignore` for `**.md` and `tools/**`).
+  - ab54940 was pushed and built by CI (that's the 3340433c image); d3bf259 and cca67f0 are local only.
+  - Pushing main costs Actions quota. Push only for releases.
+- **Probe code:** `internal/airplay/rcprobe.go`. It logs "remote control stream requested", "sender command" and "sender command data" (hex). The `RemoteControlRelay` config is wired via `-rc-relay`.
+  - Decode logged data with a raw protobuf walker: varint length, then fields. There's no protoc here.
+
+### How to test builds (user preference: no GitHub Actions for iterations)
+
+- Run `tools/deploy-dev.sh`. It runs `docker buildx` for linux/amd64, then `docker save | ssh ubuntu@100.97.228.124 sudo k3s ctr images import -`, then `kubectl set image` and waits for the rollout. Use the Tailscale IP: `ssh moro` fails host-key verification.
+- Releases: push main → CI → bump `castplay_image` in `tmphouse-infrastructure/modules/tmphouse/castplay.tf` → push (Terraform Cloud auto-applies).
+
+## Previous task: ALAC support + volume back to AirPlay
 
 ### 1. ALAC + realtime streams: DONE, realtime untested end-to-end
 
@@ -39,20 +107,20 @@ Read DESIGN.md §8–§9 first: the spike results, the decisions (Cast Streaming
   - stops playback and releases the session,
   - sends MediaRemote pause (`modernMediaRemoteCommand: "1"`),
   - and the next play anchor starts a new Cast session.
-  - **Deployed but untested** (image 07ddc612).
+  - **Deployed (image 07ddc612); the user's test result wasn't recorded.**
 - **Next/previous: not possible from the speaker** while using Cast Streaming, because the mirroring app has no media commands. `CommandNext`/`CommandPrevious` exist for whenever something can trigger them.
   - The user decided not to use Cast media playback mode for this: it measured 4–9 s of latency and can't follow AirPlay anchors.
 - The DACP client (`internal/dacp`) stays as a fallback for senders that do send the headers.
 
-### 3. Adding speakers to Apple Home: built, untested
+### 3. Adding speakers to Apple Home: DONE, verified (2026-10-26)
 
 - The Home app transient-pairs, opens a `timing=None` session, then sends `/pair-add` (its controller key), then `/configure`. castplay used to 404 `/pair-add` ("Unable to Add Accessory").
 - castplay now handles `/pair-add`, `/pair-remove`, `/pair-list` (`hap.HandlePairings`) and `/configure`.
   - **State:** stored in `speaker-<id>.home.json` in the state dir (`internal/airplay/home.go`).
   - **Advertising:** once configured, the speaker advertises status flag bit 10 (HomeKit access control) and the ACL.
   - **Access control:** recorded and echoed back, but not enforced (pair-verify accepts anyone).
-- The user hasn't retried adding the speaker yet. If it still fails, the `-v` logs show the next unhandled request.
-- **Production runs with `-v`** (tf comment says so) for these tests; remove it when done.
+- **Verified:** the user added Living Room speaker to Home. `speaker-<id>.home.json` holds the admin controller plus one non-admin controller, `accessControl: true`, `acl: 0`.
+- **Production runs with `-v`** (tf comment says so); remove it when done.
 
 ## Test setup (how the previous session tested)
 
@@ -114,6 +182,8 @@ Read DESIGN.md §8–§9 first: the spike results, the decisions (Cast Streaming
   - `hap/`: SRP-6a, pair-setup/verify, encrypted control channel; has tests.
   - `fairplay.go`: canned fp-setup replies.
   - `mdns.go`, `format.go` (audioFormat bits, `ALACCookie`).
+- `internal/airplay/rcprobe.go`: `-rc-relay` MediaRemote probe (type 130 SETUP, /command logging); to become the MRP device.
+- `tools/deploy-dev.sh`: local build → k3s import → `kubectl set image`.
 - `internal/airplay/events.go`: event channel (volume/MediaRemote commands to the sender); `home.go`: Home pairings and /configure.
 - `internal/dacp/`: DACP remote client (volume to sender, older senders).
 - `internal/ptp/ptp.go`: nqptp-style follower: Announce/Follow_Up, max-offset window, awakening Announce pair. `LocalTime(clockID, ns)`.
