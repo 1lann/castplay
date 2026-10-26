@@ -43,19 +43,14 @@ type DeviceInfo struct {
 	ModelName        string // localizedModelName, e.g. "Google Home Max"
 	ModelID          string
 	GroupID          string // AirPlay group UUID
-	// OutputDeviceUID is the speaker as an AirPlay output device: its
-	// AirPlay deviceID.
+	// OutputDeviceUID is the speaker as an AirPlay output device: the
+	// deviceid in its TXT record (pyatv's relay client matches on it).
 	OutputDeviceUID string
 }
 
-// outputDeviceUIDs are the IDs a sender may know the speaker's output
-// device by; volume messages are sent for each.
-func (d DeviceInfo) outputDeviceUIDs() []string {
-	if d.OutputDeviceUID == "" || d.OutputDeviceUID == d.UniqueIdentifier {
-		return []string{d.UniqueIdentifier}
-	}
-	return []string{d.OutputDeviceUID, d.UniqueIdentifier}
-}
+// uid identifies the speaker in deviceUID, groupedDevices and every volume
+// message.
+func (d DeviceInfo) uid() string { return cmp.Or(d.OutputDeviceUID, d.UniqueIdentifier) }
 
 func (d DeviceInfo) encode() enc {
 	return enc(nil).
@@ -74,13 +69,14 @@ func (d DeviceInfo) encode() enc {
 		bool(14, true). // supportsSharedQueue
 		bool(15, true). // supportsExtendedMotion
 		int(17, 3).     // sharedQueueVersion
-		str(19, d.UniqueIdentifier).
+		str(19, d.uid()).
 		int(21, 7). // deviceClass Accessory
 		int(22, 1). // logicalDeviceCount
 		str(26, d.GroupID).
 		str(27, d.Name).
-		bool(29, true). // isGroupLeader
-		bool(30, true). // isAirplayActive
+		msg(28, enc(nil).str(2, d.Name).str(19, d.uid()).str(39, d.ModelID)). // groupedDevices: itself
+		bool(29, true).                                                       // isGroupLeader
+		bool(30, true).                                                       // isAirplayActive
 		str(39, d.ModelID).
 		str(42, d.GroupID)
 }
@@ -267,7 +263,7 @@ func volumeCapabilities(deviceUID string) enc {
 func updateOutputDevice(d DeviceInfo, v float64) enc {
 	desc := enc(nil).
 		str(1, d.Name).
-		str(2, cmp.Or(d.OutputDeviceUID, d.UniqueIdentifier)).
+		str(2, d.uid()).
 		str(3, d.GroupID).
 		str(4, d.ModelID).
 		bool(7, true).  // isRemoteControllable

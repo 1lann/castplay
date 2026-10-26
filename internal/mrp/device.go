@@ -36,7 +36,14 @@ type Server struct {
 	np    NowPlaying
 	vol   float64 // speaker volume 0..1, -1 if unknown
 	peers map[Channel]*peer
-	art   struct {
+
+	// Volume changes from senders waiting to be applied: a slider drag sends
+	// many, and only the newest counts.
+	volMu   sync.Mutex
+	volWant float64
+	volBusy bool
+	volSet  time.Time // when a sender's change was last applied; guarded by mu
+	art     struct {
 		id    string
 		width int
 		a     *Artwork
@@ -128,7 +135,10 @@ func (s *Server) handle(p *peer, m *Message) {
 		s.mu.Unlock()
 		p.send(getVolumeResult(m.Identifier, v))
 	case TypeSetVolume:
-		go s.setVolume(p, m)
+		if m.Identifier != "" {
+			p.send(genericMessage(m.Identifier))
+		}
+		s.requestVolume(min(max(parseSetVolume(m), 0), 1))
 	default:
 		if m.Identifier != "" {
 			p.send(genericMessage(m.Identifier))
@@ -149,13 +159,11 @@ func (s *Server) subscribe(p *peer, why string) {
 	if s.cfg.SetVolume != nil {
 		d := s.cfg.Device
 		p.send(volumeAvailability())
-		p.send(updateOutputDevice(d, s.vol))
-		for _, uid := range d.outputDeviceUIDs() {
-			p.send(volumeCapabilities(uid))
-			if s.vol >= 0 {
-				p.send(volumeDidChange(s.vol, uid))
-			}
+		p.send(volumeCapabilities(d.uid()))
+		if s.vol >= 0 {
+			p.send(volumeDidChange(s.vol, d.uid()))
 		}
+		p.send(updateOutputDevice(d, s.vol))
 	}
 	s.pushLocked(p)
 }
@@ -182,10 +190,24 @@ func (s *Server) SetNowPlaying(np NowPlaying) {
 	}
 }
 
+// volumeEcho is how long after applying a sender's volume change the
+// speaker's own reports are ignored: during a slider drag they lag behind
+// and would pull the slider back.
+const volumeEcho = 1500 * time.Millisecond
+
 // SetVolume reports the speaker's volume (0..1) to every subscribed sender.
 func (s *Server) SetVolume(v float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if time.Since(s.volSet) < volumeEcho {
+		return
+	}
+	s.pushVolumeLocked(v)
+}
+
+// pushVolumeLocked sends a volume to every subscribed sender; called with
+// mu held.
+func (s *Server) pushVolumeLocked(v float64) {
 	if v == s.vol {
 		return
 	}
@@ -195,26 +217,53 @@ func (s *Server) SetVolume(v float64) {
 	}
 	for _, p := range s.peers {
 		if p.subscribed {
+			p.send(volumeDidChange(v, s.cfg.Device.uid()))
 			p.send(updateOutputDevice(s.cfg.Device, v))
-			for _, uid := range s.cfg.Device.outputDeviceUIDs() {
-				p.send(volumeDidChange(v, uid))
-			}
 		}
 	}
 }
 
-func (s *Server) setVolume(p *peer, m *Message) {
-	v := min(max(parseSetVolume(m), 0), 1)
-	var err error = errNoCommands
-	if s.cfg.SetVolume != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err = s.cfg.SetVolume(ctx, v)
-		cancel()
+// requestVolume applies a sender's volume change. Changes are applied one at
+// a time, skipping to the newest, so they can't land out of order.
+func (s *Server) requestVolume(v float64) {
+	if s.cfg.SetVolume == nil {
+		return
 	}
-	p.log.Debug("remote control: set volume", "volume", v, "err", err)
-	if m.Identifier != "" {
-		p.send(genericMessage(m.Identifier))
+	s.volMu.Lock()
+	s.volWant = v
+	if s.volBusy {
+		s.volMu.Unlock()
+		return
 	}
+	s.volBusy = true
+	s.volMu.Unlock()
+	go func() {
+		applied := -1.0
+		for {
+			s.volMu.Lock()
+			v := s.volWant
+			if v == applied {
+				s.volBusy = false
+				s.volMu.Unlock()
+				return
+			}
+			s.volMu.Unlock()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := s.cfg.SetVolume(ctx, v)
+			cancel()
+			applied = v
+			if err != nil {
+				s.log.Warn("remote control: set volume", "volume", v, "err", err)
+				continue
+			}
+			s.log.Debug("remote control: set volume", "volume", v)
+			// Confirm it now, rather than wait for the speaker's report.
+			s.mu.Lock()
+			s.volSet = time.Now()
+			s.pushVolumeLocked(v)
+			s.mu.Unlock()
+		}
+	}()
 }
 
 func (s *Server) answerQueue(p *peer, m *Message) {
