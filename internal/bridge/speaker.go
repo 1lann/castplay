@@ -154,6 +154,13 @@ func (s *Speaker) Anchor(a airplay.Anchor) {
 		}
 	}
 	s.log.Info("play", "rtpTime", a.RTPTime, "anchorIn", time.Until(at).Round(time.Millisecond), "clock", source)
+	// Resuming after the Cast app stopped (or the idle release): bring a
+	// session up now rather than after castReady's wait.
+	go func() {
+		if err := s.ensureCast(); err != nil {
+			s.log.Error("cast session", "err", err)
+		}
+	}()
 	go s.pump(s.epoch, a.RTPTime, at, s.format)
 }
 
@@ -455,6 +462,7 @@ func (s *Speaker) ensureCast() error {
 	cc.OnVolume(s.castVolume)
 	go tx.Receive(runCtx)
 	go s.reportLoop(runCtx, tx, s.castEpoch)
+	go s.watchApp(runCtx, cc)
 	s.log.Info("cast session ready", "took", time.Since(began).Round(time.Millisecond), "target", s.cfg.TargetDelay)
 
 	s.mu.Lock()
@@ -464,6 +472,36 @@ func (s *Speaker) ensureCast() error {
 		s.requestVolume(db)
 	}
 	return nil
+}
+
+// watchApp handles the Cast app stopping on its own. A mirroring session
+// has no media commands, so the speaker's pause button (or "Hey Google,
+// pause") stops the app instead; castplay then asks the AirPlay sender to
+// pause, and the next play anchor starts a new Cast session.
+func (s *Speaker) watchApp(ctx context.Context, cc *cast.Client) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-cc.AppClosed():
+	}
+	if ctx.Err() != nil {
+		return // we stopped it
+	}
+	s.log.Info("Cast app stopped on the device; pausing the AirPlay sender")
+	s.mu.Lock()
+	s.stopLocked()
+	events := s.events
+	s.mu.Unlock()
+	s.closeCast()
+	if events == nil {
+		s.log.Warn("sender has no event channel; it keeps playing to silence")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := events.Command(ctx, airplay.CommandPause); err != nil {
+		s.log.Warn("pause AirPlay sender", "err", err)
+	}
 }
 
 // castReady waits for the Cast session started by StreamStarted.

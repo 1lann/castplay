@@ -70,9 +70,11 @@ type Client struct {
 	onMedia     func(MediaStatus, time.Time)
 	onVolume    func(level float64, muted bool)
 
-	lastRecv atomic.Int64 // unix nanos
-	done     chan struct{}
-	err      error
+	lastRecv  atomic.Int64 // unix nanos
+	done      chan struct{}
+	appClosed chan struct{}
+	closeOnce sync.Once
+	err       error
 }
 
 // Dial opens the TLS channel to a Cast device (usually port 8009; groups use
@@ -85,10 +87,11 @@ func Dial(ctx context.Context, addr string, log *slog.Logger) (*Client, error) {
 		return nil, fmt.Errorf("cast: dial %s: %w", addr, err)
 	}
 	c := &Client{
-		conn:    conn,
-		log:     log,
-		pending: make(map[int]chan Reply),
-		done:    make(chan struct{}),
+		conn:      conn,
+		log:       log,
+		pending:   make(map[int]chan Reply),
+		done:      make(chan struct{}),
+		appClosed: make(chan struct{}),
 	}
 	c.lastRecv.Store(time.Now().UnixNano())
 	go c.readLoop()
@@ -120,6 +123,11 @@ func (c *Client) OnVolume(f func(level float64, muted bool)) {
 }
 
 func (c *Client) Done() <-chan struct{} { return c.done }
+
+// AppClosed is closed when the launched app closes our virtual connection to
+// it: the app stopped, whether by StopApp or on the device (its pause button
+// or a voice command stops a mirroring session).
+func (c *Client) AppClosed() <-chan struct{} { return c.appClosed }
 
 func (c *Client) Close() error {
 	c.mu.Lock()
@@ -365,6 +373,9 @@ func (c *Client) readLoop() {
 			continue
 		case m.Namespace == NSConnection && head.Type == "CLOSE":
 			c.log.Info("cast: device closed virtual connection", "source", m.SourceID)
+			if m.SourceID != receiverID {
+				c.closeOnce.Do(func() { close(c.appClosed) })
+			}
 		}
 		c.log.Debug("cast recv", "source", m.SourceID, "ns", m.Namespace, "payload", m.PayloadUTF8)
 
