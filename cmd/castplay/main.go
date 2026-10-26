@@ -55,7 +55,7 @@ func main() {
 	flag.Float64Var(&o.volumeScale, "volume-scale", 1.0, "maximum Cast volume (0..1) that AirPlay full volume maps to")
 	flag.DurationVar(&o.discover, "rediscover", 30*time.Second, "how often to look for new or vanished Cast devices")
 	flag.BoolVar(&o.noPTP, "no-ptp", false, "don't follow sender PTP clocks (UDP 319/320); playback then starts on arrival")
-	flag.BoolVar(&o.rcRelay, "rc-relay", false, "experimental: advertise remote control relay and log the MediaRemote streams senders open")
+	flag.BoolVar(&o.rcRelay, "rc-relay", false, "experimental: show what Cast speakers play natively (Spotify, YouTube Music, ...) on Apple devices, with playback control, via MediaRemote")
 	flag.BoolVar(&o.verbose, "v", false, "debug logging")
 	flag.Parse()
 

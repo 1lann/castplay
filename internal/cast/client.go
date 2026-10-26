@@ -69,6 +69,7 @@ type Client struct {
 	sessionID   int    // media session
 	onMedia     func(MediaStatus, time.Time)
 	onVolume    func(level float64, muted bool)
+	onMessage   func(source, ns string, payload json.RawMessage)
 
 	lastRecv  atomic.Int64 // unix nanos
 	done      chan struct{}
@@ -120,6 +121,26 @@ func (c *Client) OnVolume(f func(level float64, muted bool)) {
 	c.mu.Lock()
 	c.onVolume = f
 	c.mu.Unlock()
+}
+
+// OnMessage registers a callback for every message received other than
+// heartbeats. It runs on the read loop, so it must not wait for replies.
+func (c *Client) OnMessage(f func(source, ns string, payload json.RawMessage)) {
+	c.mu.Lock()
+	c.onMessage = f
+	c.mu.Unlock()
+}
+
+// Connect opens a virtual connection to dest (an app's transportId), which
+// subscribes this sender to its broadcasts.
+func (c *Client) Connect(dest string) error {
+	return c.send(dest, NSConnection, map[string]any{"type": "CONNECT", "origin": map[string]any{}})
+}
+
+// Request sends payload to dest on namespace ns and waits for the reply
+// with the same requestId.
+func (c *Client) Request(ctx context.Context, dest, ns string, payload map[string]any) (Reply, error) {
+	return c.request(ctx, dest, ns, payload)
 }
 
 func (c *Client) Done() <-chan struct{} { return c.done }
@@ -381,6 +402,11 @@ func (c *Client) readLoop() {
 
 		r := Reply{Type: head.Type, RequestID: head.RequestID, Payload: json.RawMessage(m.PayloadUTF8), At: now}
 		c.mu.Lock()
+		if f := c.onMessage; f != nil {
+			c.mu.Unlock()
+			f(m.SourceID, m.Namespace, r.Payload)
+			c.mu.Lock()
+		}
 		if head.Type == "MEDIA_STATUS" {
 			if st, ok := parseMediaStatus(r.Payload); ok {
 				c.sessionID = st.MediaSessionID

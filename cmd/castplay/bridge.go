@@ -13,6 +13,7 @@ import (
 	"castplay/internal/airplay"
 	"castplay/internal/bridge"
 	"castplay/internal/cast"
+	"castplay/internal/mrp"
 	"castplay/internal/ptp"
 )
 
@@ -20,6 +21,7 @@ import (
 type bridged struct {
 	dev     cast.Device
 	speaker *bridge.Speaker
+	remote  *bridge.RemoteControl // nil without -rc-relay
 	mdns    *zeroconf.Server
 	stop    context.CancelFunc
 	missing int // consecutive discovery rounds without the device
@@ -78,6 +80,9 @@ func runBridge(ctx context.Context, o options, ifc net.Interface, ip net.IP, log
 				if b.dev.Addr != d.Addr {
 					log.Info("cast device moved", "name", d.Name, "addr", d.Addr)
 					b.speaker.SetDevice(d)
+					if b.remote != nil {
+						b.remote.SetDevice(d)
+					}
 					b.dev = d
 				}
 				continue
@@ -122,32 +127,43 @@ func startSpeaker(ctx context.Context, o options, d cast.Device, key string, ifc
 	if d.Model != "" {
 		model = d.Model
 	}
+	sctx, stop := context.WithCancel(ctx)
+	var rc *bridge.RemoteControl
+	var rcIface airplay.RemoteControl
+	if o.rcRelay {
+		rc = bridge.NewRemoteControl(d, mrp.DeviceInfo{
+			UniqueIdentifier: id.hap().PairingID, Name: d.Name, ModelName: model, ModelID: model, GroupID: id.GroupID,
+		}, log)
+		rcIface = rc
+		go rc.Run(sctx)
+	}
 	var r *airplay.Receiver
 	for ; port < o.basePort+1000; port++ {
 		r = airplay.NewReceiver(airplay.Config{
 			Name: d.Name, DeviceID: id.DeviceID, GroupID: id.GroupID, Identity: id.hap(),
 			Model: model, Port: port, IP: ip, OutputLatency: o.targetDelay + o.pipeline,
-			HomeFile: statePath(o.stateDir, key, ".home.json"), RemoteControlRelay: o.rcRelay, Log: log,
+			HomeFile: statePath(o.stateDir, key, ".home.json"), RemoteControl: rcIface, Log: log,
 		}, sp)
 		if err = r.Listen(); err == nil {
 			break
 		}
 	}
 	if err != nil {
+		stop()
 		return nil, 0, fmt.Errorf("no free port: %w", err)
 	}
 	mdns, err := r.Advertise([]net.Interface{ifc})
 	if err != nil {
+		stop()
 		return nil, 0, err
 	}
-	sctx, stop := context.WithCancel(ctx)
 	go func() {
 		if err := r.Serve(sctx); err != nil {
 			log.Error("airplay receiver", "name", d.Name, "err", err)
 		}
 	}()
 	log.Info("bridging", "name", d.Name, "model", d.Model, "cast", d.Addr, "airplayPort", r.Port(), "deviceID", id.DeviceID)
-	return &bridged{dev: d, speaker: sp, mdns: mdns, stop: stop}, r.Port(), nil
+	return &bridged{dev: d, speaker: sp, remote: rc, mdns: mdns, stop: stop}, r.Port(), nil
 }
 
 func (b *bridged) close() {

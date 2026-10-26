@@ -2,6 +2,7 @@ package airplay
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -154,6 +155,11 @@ var errNoEventChannel = errors.New("sender has not opened the event channel")
 
 // post sends POST /command with a binary plist body and waits for the reply.
 func (e *EventChannel) post(ctx context.Context, body map[string]any) error {
+	return e.postHeader(ctx, body)
+}
+
+// postHeader is post with extra headers, given as name, value pairs.
+func (e *EventChannel) postHeader(ctx context.Context, body map[string]any, hdr ...string) error {
 	resp, err := plistResponse(body)
 	if err != nil {
 		return err
@@ -168,8 +174,12 @@ func (e *EventChannel) post(ctx context.Context, body map[string]any) error {
 		defer e.conn.SetDeadline(time.Time{})
 	}
 	e.cseq++
-	msg := fmt.Sprintf("POST /command RTSP/1.0\r\nCSeq: %d\r\nContent-Length: %d\r\nContent-Type: application/x-apple-binary-plist\r\n\r\n",
+	msg := fmt.Sprintf("POST /command RTSP/1.0\r\nCSeq: %d\r\nContent-Length: %d\r\nContent-Type: application/x-apple-binary-plist\r\n",
 		e.cseq, len(resp.Body))
+	for i := 0; i+1 < len(hdr); i += 2 {
+		msg += hdr[i] + ": " + hdr[i+1] + "\r\n"
+	}
+	msg += "\r\n"
 	if _, err := e.conn.Write(append([]byte(msg), resp.Body...)); err != nil {
 		return e.fail(err)
 	}
@@ -178,7 +188,7 @@ func (e *EventChannel) post(ctx context.Context, body map[string]any) error {
 		return e.fail(err)
 	}
 	if status < 200 || status > 299 {
-		return fmt.Errorf("sender replied %d to %s", status, body["type"])
+		return fmt.Errorf("sender replied %d to %v", status, cmp.Or(body["type"], any("remote control data")))
 	}
 	return nil
 }

@@ -116,10 +116,10 @@ type Config struct {
 	IP            net.IP        // address advertised and used for timing peers
 	OutputLatency time.Duration // reported to senders
 	HomeFile      string        // where Home pairings persist ("" = memory only)
-	// RemoteControlRelay advertises the remote control relay status flag and
-	// logs the type 130 streams senders then open (experimental).
-	RemoteControlRelay bool
-	Log                *slog.Logger
+	// RemoteControl, if set, advertises the remote control relay status
+	// flag and serves the MediaRemote channels senders then open.
+	RemoteControl RemoteControl
+	Log           *slog.Logger
 }
 
 type Receiver struct {
@@ -191,6 +191,7 @@ type session struct {
 	timing    string
 	events    *EventChannel
 	streams   map[uint64]*stream
+	remotes   map[uint64]*RemoteChannel
 	closed    chan struct{}
 }
 
@@ -199,6 +200,7 @@ func (r *Receiver) handleConn(ctx context.Context, c net.Conn) {
 		r: r, raw: c, br: bufio.NewReader(c), w: c,
 		pair:    hap.NewSession(r.cfg.Identity, ""),
 		streams: map[uint64]*stream{},
+		remotes: map[uint64]*RemoteChannel{},
 		closed:  make(chan struct{}),
 		log:     r.log.With("peer", c.RemoteAddr().String()),
 	}
@@ -277,8 +279,8 @@ func (s *session) handle(req *request) (*response, error) {
 		case "/configure":
 			return s.configure(req)
 		case "/command":
-			if s.r.cfg.RemoteControlRelay {
-				s.logCommand(req)
+			if s.r.cfg.RemoteControl != nil {
+				s.remoteCommand(req)
 			}
 			return &response{Status: 200}, nil
 		case "/feedback", "/audioMode", "/pair-pin-start":
@@ -368,7 +370,7 @@ func (s *session) configure(req *request) (*response, error) {
 
 func (r *Receiver) statusFlags() int {
 	f := r.home.statusFlags()
-	if r.cfg.RemoteControlRelay {
+	if r.cfg.RemoteControl != nil {
 		f |= statusRemoteControlRelay
 	}
 	return f
@@ -418,12 +420,8 @@ func (s *session) setup(req *request) (*response, error) {
 	tookOver := false
 	for _, rs := range rawStreams {
 		desc, _ := rs.(map[string]any)
-		if typ, _ := pInt(desc, "type"); typ == streamRemoteControl && s.r.cfg.RemoteControlRelay {
-			d, err := s.probeRemoteControl(desc)
-			if err != nil {
-				return &response{Status: 500}, err
-			}
-			out = append(out, d)
+		if typ, _ := pInt(desc, "type"); typ == streamRemoteControl && s.r.cfg.RemoteControl != nil {
+			out = append(out, s.openRemote(desc))
 			continue
 		}
 		if !tookOver {
@@ -541,20 +539,24 @@ func (s *session) setPeers(req *request) (*response, error) {
 func (s *session) teardown(req *request) (*response, error) {
 	body, _ := req.plistBody()
 	if rs, ok := body["streams"].([]any); ok && len(rs) > 0 {
+		audio := false
 		for _, x := range rs {
 			d, _ := x.(map[string]any)
 			id, _ := pUint(d, "streamID")
 			if st := s.streams[id]; st != nil {
 				st.close()
 				delete(s.streams, id)
+				audio = true
 			}
+			s.closeRemote(id)
 		}
-		if len(s.streams) == 0 && s.owns() {
+		if audio && len(s.streams) == 0 && s.owns() {
 			s.r.player.StreamStopped()
 		}
 		return &response{Status: 200}, nil
 	}
 	s.stopStreams()
+	s.closeRemotes()
 	return &response{Status: 200}, nil
 }
 
@@ -604,8 +606,15 @@ func (s *session) stopStreams() {
 	}
 }
 
+func (s *session) closeRemotes() {
+	for id := range s.remotes {
+		s.closeRemote(id)
+	}
+}
+
 func (s *session) close() {
 	s.stopStreams()
+	s.closeRemotes()
 	if s.events != nil {
 		s.events.close()
 	}
