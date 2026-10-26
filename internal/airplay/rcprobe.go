@@ -122,6 +122,11 @@ func (s *session) logCommand(req *request) {
 	}
 	sort.Strings(keys)
 	s.log.Info("sender command", "type", body["type"], "body", keys)
+	if params, ok := body["params"].(map[string]any); ok {
+		if data, ok := params["data"].([]byte); ok {
+			s.log.Info("sender command data", "hex", fmt.Sprintf("%x", data))
+		}
+	}
 }
 
 func summarize(v any) string {
