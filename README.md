@@ -4,6 +4,8 @@
 
 castplay runs on a small always-on Linux box on your network. Every Chromecast, Google Home, Nest speaker and Cast group it finds shows up in the AirPlay menu on your iPhone, iPad and Mac. It plays in sync with your HomePods and other AirPlay 2 speakers, can be added to the Apple Home app, and keeps volume and playback controls working in both directions.
 
+It works the other way too: whatever the speaker plays through Google Cast (Spotify Connect, YouTube Music, "Hey Google, play…") shows up on your Apple devices with title, artist and artwork, in Control Center and the Home app, as a HomePod's music does, and you can control it from there.
+
 ## Features
 
 **Plays like an AirPlay 2 speaker**
@@ -18,11 +20,11 @@ castplay runs on a small always-on Linux box on your network. Every Chromecast, 
 - **Pause from the speaker:** pressing pause on the speaker or saying "Hey Google, pause" pauses the iPhone or Mac that is playing.
 - **Takeover:** when a second iPhone picks the speaker, the newest sender wins, as on a HomePod.
 
-**The speaker in Control Center (`-rc-relay`)**
+**Now playing sync from Google Cast to Apple devices (`-rc-relay`)**
 
-Apple devices see the speaker the way they see a HomePod: the speaker's tile in Control Center and the Home app shows what it is playing, with artwork, and lets you control it.
-- **Cast-native playback:** when the speaker plays Spotify Connect, YouTube Music or a "Hey Google, play…" request, your iPhone shows the track, with artwork, and can play, pause and skip it.
-- **AirPlay playback:** when your Mac is AirPlaying to it, your iPhone shows the Mac's track and controls the Mac.
+Apple devices see the speaker the way they see a HomePod. Its tile in Control Center and the Home app shows what it is playing and lets you control it, wherever the music comes from.
+- **Google Cast → Apple devices:** when the speaker plays Spotify Connect, YouTube Music or a "Hey Google, play…" request, the Apple devices on your network (iPhone, Mac, Apple TV) show the title, artist, album, artwork, progress and play state. It updates as tracks change, and you can play, pause and skip from there.
+- **AirPlay from another device:** when your Mac is AirPlaying to the speaker, your iPhone shows the Mac's track and controls the Mac.
 - **Speaker volume slider:** works from any Apple device, whatever is playing.
 
 ## How it compares
@@ -37,7 +39,7 @@ Apple devices see the speaker the way they see a HomePod: the speaker's tile in 
 | Volume: Google Home app or speaker → iPhone slider | ✅ | ✅ | Not documented |
 | Pause on the speaker pauses the iPhone | ✅ | ✅ (also next / previous) | Not documented |
 | Track info and artwork on the speaker's display | ❌ ³ | ✅ (MP3 / AAC) | ✅ |
-| Cast-native playback (Spotify, YouTube Music…) shown and controlled on Apple devices | ✅ (`-rc-relay`) | ❌ | ❌ |
+| Now playing sync from Google Cast (Spotify, YouTube Music, "Hey Google"…) to Control Center and the Home app, with controls | ✅ (`-rc-relay`) | ❌ | ❌ |
 | Also bridges Sonos / UPnP | ❌ | ✅ (airupnp) | ✅ (any Music Assistant player) |
 | Cast groups | Bridged, not yet tested | ✅ | ✅ |
 | Runs on | Linux (Docker image) | Linux, macOS, Windows, BSD… | Music Assistant server (e.g. Home Assistant) |
