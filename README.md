@@ -1,17 +1,13 @@
 # castplay
 
-**Turn every Google Cast speaker into a real AirPlay 2 speaker.**
-
-castplay runs on a small always-on Linux box on your network. Every Chromecast, Google Home, Nest speaker and Cast group it finds shows up in the AirPlay menu on your iPhone, iPad and Mac. It plays in sync with your HomePods and other AirPlay 2 speakers, can be added to the Apple Home app, and keeps volume and playback controls working in both directions.
-
-It works the other way too: whatever the speaker plays through Google Cast (Spotify Connect, YouTube Music, "Hey Google, play…") shows up on your Apple devices with title, artist and artwork, in Control Center and the Home app, as a HomePod's music does, and you can control it from there.
+castplay is an AirPlay 2 to Google Cast bridge that you run on an always-on Linux box on your network. It allows you to use your Google Cast compatible speaker (like a Google Home/Nest Audio speaker) like any other AirPlay 2 speaker, with support for features like bi-directional title, artist and artwork syncing (Google Cast content also appears in Apple Control Center and your Home app), and bi-directional volume sync.
 
 ## Features
 
 **Plays like an AirPlay 2 speaker**
-- **AirPlay 2, not AirPlay 1.** The speakers appear in the iOS and macOS AirPlay pickers next to HomePods, and you can pick several at once.
-- **Multi-room sync.** castplay follows the sender's PTP clock and schedules every audio frame for the moment the sender asked for it. A Google Home Max measured within about 15 ms of the Mac playing the same track.
-- **Low latency.** Audio goes over Cast Streaming, the protocol Chrome tab-casting uses, with a 100 ms buffer, rather than as an HTTP stream the speaker buffers for seconds. Play, pause and seek respond like any AirPlay speaker.
+- **AirPlay 2.** The speakers appear in the iOS and macOS AirPlay pickers next to HomePods, and you can pick several at once.
+- **Multi-device sync.** castplay follows the sender's PTP clock and schedules every audio frame for the moment the sender requests per the AirPlay 2 spec. You can watch content on an Apple TV and have the audio be in-sync on a Google Home speaker. A Google Home Max measured within about 15 ms of the Mac playing the same track.
+- **Low latency.** Audio goes over Cast Streaming, the protocol Chrome tab-casting uses, rather than as an HTTP stream the speaker buffers for seconds. This results in an end-to-end streaming latency of under 250 ms. Play, pause and seek respond like any AirPlay 2 speaker.
 - **Add to the Home app**, like any AirPlay 2 speaker, and assign each one to a room.
 - **One AirPlay speaker per Cast device and group**, discovered automatically. Each keeps a stable identity across restarts, so your devices don't re-pair.
 
