@@ -16,7 +16,7 @@ castplay is an AirPlay 2 to Google Cast bridge that you run on an always-on Linu
 - **Pause from the speaker:** pressing pause on the speaker or saying "Hey Google, pause" pauses the iPhone or Mac that is playing.
 - **Takeover:** when a second iPhone picks the speaker, the newest sender wins, as on a HomePod.
 
-**Now playing sync from Google Cast to Apple devices (`-rc-relay`)**
+**Now playing sync from Google Cast to Apple devices**
 
 Apple devices see the speaker the way they see a HomePod. Its tile in Control Center and the Home app shows what it is playing and lets you control it, wherever the music comes from.
 - **Google Cast → Apple devices:** when the speaker plays Spotify Connect, YouTube Music or a "Hey Google, play…" request, the Apple devices on your network (iPhone, Mac, Apple TV) show the title, artist, album, artwork, progress and play state. It updates as tracks change, and you can play, pause and skip from there.
@@ -35,7 +35,7 @@ Apple devices see the speaker the way they see a HomePod. Its tile in Control Ce
 | Volume: Google Home app or speaker → iPhone slider | ✅ | ✅ | Not documented |
 | Pause on the speaker pauses the iPhone | ✅ | ✅ (also next / previous) | Not documented |
 | Track info and artwork on the speaker's display | ❌ ³ | ✅ (MP3 / AAC) | ✅ |
-| Now playing sync from Google Cast (Spotify, YouTube Music, "Hey Google"…) to Control Center and the Home app, with controls | ✅ (`-rc-relay`) | ❌ | ❌ |
+| Now playing sync from Google Cast (Spotify, YouTube Music, "Hey Google"…) to Control Center and the Home app, with controls | ✅ | ❌ | ❌ |
 | Also bridges Sonos / UPnP | ❌ | ✅ (airupnp) | ✅ (any Music Assistant player) |
 | Cast groups | Bridged, not yet tested | ✅ | ✅ |
 | Runs on | Linux (Docker image) | Linux, macOS, Windows, BSD… | Music Assistant server (e.g. Home Assistant) |
@@ -55,7 +55,7 @@ You need an always-on Linux machine on the same network as the speakers, with ho
 docker run -d --name castplay --restart unless-stopped \
   --network host \
   -v castplay-state:/state \
-  ghcr.io/1lann/castplay:main -rc-relay
+  ghcr.io/1lann/castplay:main
 ```
 
 Within a few seconds every Cast speaker shows up in the AirPlay menu. To put one in the Home app, add it the way you would any AirPlay 2 speaker.
@@ -68,16 +68,16 @@ The image includes ffmpeg and runs as an unprivileged user. It binds PTP's low p
 
 ```bash
 go build -o bin/castplay ./cmd/castplay
-./bin/castplay -rc-relay
+./bin/castplay
 ```
 
 ## Options
 
-Most setups only need `-rc-relay`, plus `-iface` on hosts with several network interfaces. The recommended column is what the author runs at home: a Google Home Max on a k3s node, with every other option at its default.
+Most setups need no options at all, except `-iface` on hosts with several network interfaces. The recommended column is what the author runs at home: a Google Home Max on a k3s node, with every other option at its default.
 
 | Option | Default | Recommended | What it does |
 |---|---|---|---|
-| `-rc-relay` | off | **on** | Apple devices show and control what the speaker plays, and get a working speaker volume slider. Off by default while it is new. |
+| `-rc-relay` | on | on | Apple devices show and control what the speaker plays, and get a working speaker volume slider. `-rc-relay=false` turns it off. |
 | `-iface` | the interface with the default route | your LAN interface (e.g. `eno1`) | Where castplay advertises the speakers and listens for PTP. Set it if the host has Docker, VPN or other interfaces. |
 | `-state` | `/state` in the image | default | Where speaker identities and Home pairings are kept. Keep it on persistent storage, or every restart looks like a new speaker. |
 | `-target-delay` | `100ms` | default | The Cast receiver's buffer. Raise it, e.g. to `200ms`, if audio drops out on weak Wi-Fi; latency goes up by the same amount. |
@@ -96,10 +96,10 @@ Most setups only need `-rc-relay`, plus `-iface` on hosts with several network i
 - **No track info on the Cast speaker itself.** The speaker's screen and the Google Home app show a generic title, and its next/previous buttons do nothing during AirPlay playback.
 - **Linux host required**, and not the same machine as the sender (PTP ports).
 - **Not yet tested:** Cast groups over Cast Streaming, speakers other than the Google Home Max, and realtime ALAC streams (e.g. macOS system audio). The sync calibration (`-output-latency`) may differ per speaker model.
-- **`-rc-relay`:** next/previous on Cast apps other than Spotify, and seeking from an iPhone, are untested.
+- **Now playing sync:** next/previous on Cast apps other than Spotify, and seeking from an iPhone, are untested.
 
 ## How it works
 
-castplay implements an AirPlay 2 receiver: mDNS, HomeKit pairing, the encrypted RTSP control channel, and buffered and realtime audio. It decodes the sender's AAC, ALAC or PCM audio with ffmpeg, re-encodes it as Opus and sends it over Cast Streaming. Each frame is timestamped so it plays at the time the sender's PTP clock asked for. For `-rc-relay`, it speaks MediaRemote, the protocol HomePods use for now-playing, over AirPlay's remote control channel.
+castplay implements an AirPlay 2 receiver: mDNS, HomeKit pairing, the encrypted RTSP control channel, and buffered and realtime audio. It decodes the sender's AAC, ALAC or PCM audio with ffmpeg, re-encodes it as Opus and sends it over Cast Streaming. Each frame is timestamped so it plays at the time the sender's PTP clock asked for. For now playing sync, it speaks MediaRemote, the protocol HomePods use for now-playing, over AirPlay's remote control channel.
 
 The design, measurements and protocol notes are in [DESIGN.md](DESIGN.md).

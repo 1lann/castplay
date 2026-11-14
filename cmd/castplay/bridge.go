@@ -21,7 +21,7 @@ import (
 type bridged struct {
 	dev     cast.Device
 	speaker *bridge.Speaker
-	remote  *bridge.RemoteControl // nil without -rc-relay
+	remote  *bridge.RemoteControl // nil with -rc-relay=false
 	mdns    *zeroconf.Server
 	stop    context.CancelFunc
 	missing int // consecutive discovery rounds without the device
